@@ -123,7 +123,8 @@ export type Ids = {
   codes: { number },
 }
 
-local IdCache: { [tes3.Plugin]: { pool: Pool, ids: Ids } } = setmetatable({}, { __mode = 'k' }) :: any
+local IdCache =
+  setmetatable({} :: { [tes3.Plugin]: { pool: Pool, ids: Ids } }, { __mode = 'k' })
 
 --- Every record's id (interned in `ids`, straight from the file's bytes: no string is made) and
 --- type in a content file, read once however many scans ask: a strip's target scan, provenance,

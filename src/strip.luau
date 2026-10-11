@@ -1908,6 +1908,9 @@ local function strip(
   local ids = LoadOrder.pool()
   local steps = {}
   local applied = true
+  -- Whether the last step couldn't be attempted, as its `mutationReadiness` reports: a strip stops
+  -- at the first such step.
+  local blocked = false
   for _, dependency in removal do
     local metadata = tes3.save.profile(plugin)
     local deps = metadata.dependencies
@@ -2082,6 +2085,7 @@ local function strip(
       warnings = warnings,
     })
 
+    blocked = not readiness.canAttemptDryRun
     if not execution then
       applied = false
       break
@@ -2104,13 +2108,12 @@ local function strip(
     written = jess.fs.write(target, plugin:save(), { backup = given.backup ~= false })
   end
 
-  local last = steps[#steps] :: { [string]: any }?
   local report = {
     input = if save.path then save.path else '<memory>',
     dependencies = removal,
     steps = steps,
     written = written,
-    blocked = last ~= nil and not last.mutationReadiness.canAttemptDryRun,
+    blocked = blocked,
   }
   return report, if mode ~= 'dryRun' and applied then plugin else nil
 end

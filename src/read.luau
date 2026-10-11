@@ -169,19 +169,21 @@ local function morrowindInfo(plugin: Plugin): Info
   -- The player's level and class are on the `player` NPC_ record, as OpenMW's importer reads
   -- them (apps/essimporter/converter.hpp, ConvertNPC).
   local npcTag = tes3.tags.code 'NPC_'
-  local player: { [string]: any }? = nil
+  local player: tes3.Value? = nil
   for index = 0, plugin:count() - 1 do
     if plugin:code(index) ~= npcTag then continue end
 
     -- A record that doesn't decode isn't the player's, as far as the header goes.
     local ok, value = pcall(plugin.decode, plugin, index)
     if ok and value and string.lower(value.id :: string) == 'player' then
-      player = value :: any
+      player = value
       break
     end
   end
 
-  local class = player and player.class
+  -- A decoded NPC_ always has its class and its NPDT, defaulted when the record carries neither.
+  local class, data = player and player.class, player and player.data
+  local level = if type(data) == 'table' then (data :: tes3.Value).level else nil
   local dependencies = {}
   for _, master in masters do
     table.insert(dependencies, master.name)
@@ -192,8 +194,8 @@ local function morrowindInfo(plugin: Plugin): Info
     description = header.description,
     player = {
       name = if gmdt then text(92, 32) else '',
-      level = player and player.data.level,
-      classId = if class and class ~= '' then class else nil,
+      level = if type(level) == 'number' then level else nil,
+      classId = if type(class) == 'string' and class ~= '' then class else nil,
     },
     cell = if gmdt then text(24, 64) else '',
     inGameTime = {
