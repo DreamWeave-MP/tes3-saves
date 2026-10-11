@@ -1,0 +1,1355 @@
+--!strict
+--!native
+-- `@tes3-saves/cli`: the argument lists `parse` reads into requests and the ones it refuses, the
+-- documents `render` makes of results built by hand (among them the examples of jess's own
+-- `jess save` page, byte for byte), the exit status of each outcome, and whole runs through `run`
+-- on the saves jess's CLI tests used (`libs/cli/tests/save.rs`). Messages a run prints go to the
+-- suite's own standard output and error.
+local cli = require '@tes3-saves/cli'
+local commands = require '@tes3-saves/commands'
+local disk = require './disk'
+local dumps = require './dumps'
+local fixtures = require './fixtures'
+local json = require '@jess/json'
+local saves = require '@tes3-saves'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local function parsed(argv: { string }): cli.Request
+  local request, message = cli.parse(argv)
+  return request or error(message, 0)
+end
+
+local function refusal(argv: { string }): string
+  local request, message = cli.parse(argv)
+  expect(request).toBeNil()
+  return message :: string
+end
+
+--- What a run of `argv` prints and exits with, by the steps `run` takes: the request `parse`
+--- reads, the command of that name, `render`, and `status`.
+local function printed(argv: { string }): (string, number)
+  local request = parsed(argv)
+  local result: commands.Result
+  if request.command == 'info' then
+    result = commands.info(request.request)
+  elseif request.command == 'check' then
+    result = commands.check(request.request)
+  elseif request.command == 'strip' then
+    result = commands.strip(request.request)
+  elseif request.command == 'screenshot' then
+    result = commands.screenshot(request.request)
+  elseif request.command == 'dump' then
+    result = commands.dump(request.request)
+  else
+    error(`{request.command} prints no document`, 0)
+  end
+
+  return cli.render(result, { format = request.format }), cli.status(result)
+end
+
+--- A save alone in a fresh folder named `name`.
+local function saved(name: string, bytes: string, file: string?): string
+  return disk.write(jess.fs.join(disk.folder(name), file or 'Save.omwsave'), bytes)
+end
+
+--- The f32 nearest `value`, as a save holds one.
+local function single(value: number): number
+  return string.unpack('<f', string.pack('<f', value)) :: number
+end
+
+local function float(value: number): saves.Node return { kind = 'float', value = value } end
+
+local function fields(keys: { string }, values: { saves.Node }, verbatim: boolean?): saves.Node
+  return { kind = 'map', keys = keys, values = values, verbatim = verbatim }
+end
+
+local function list(items: { saves.Node }): saves.Node return { kind = 'list', items = items } end
+
+--- The save of jess's `jess save` page: Caius_Met.omwsave, as `info` described it.
+local CaiusMet: commands.InfoResult = {
+  command = 'info',
+  path = 'Caius_Met.omwsave',
+  info = {
+    format = 'openmw',
+    formatVersion = 37,
+    description = 'Caius Met',
+    player = { name = 'Ashur', level = 1, classId = 'Archer' },
+    cell = 'Balmora, Caius Cosades\' House',
+    inGameTime = { gameHour = single(8.372071), day = 18, month = 7, year = 427 },
+    timePlayed = 4254.171185921878,
+    dependencies = { 'builtin.omwscripts', 'Morrowind.esm', 'Tribunal.esm', 'Bloodmoon.esm' },
+    screenshotBytes = 87035,
+    currentDay = 3,
+    currentHealth = 55,
+    maximumHealth = 55,
+  },
+}
+
+--- A check as `@tes3-saves` reports one, built by hand.
+local function checked(fields: { [string]: unknown }): commands.CheckResult
+  local check: saves.Check = {
+    input = 'Caius_Met.omwsave',
+    verdict = 'structureValid',
+    loads = true,
+    formatVersion = 40,
+    strippableFormat = true,
+    structureProblems = {},
+    loadOrderChecked = false,
+    missingContent = {},
+    addedContent = {},
+    orderChanged = false,
+    findings = {},
+    droppedOnLoad = {},
+    warnings = {},
+  }
+
+  for key, value in fields do
+    (check :: { [string]: unknown })[key] = value
+  end
+
+  return { command = 'check', path = check.input, check = check }
+end
+
+--- A strip's result with one step, built by hand.
+local function stripped(step: { [string]: unknown }, more: { [string]: unknown }?): commands.StripResult
+  local result: commands.StripResult = {
+    command = 'strip',
+    path = 'Save.omwsave',
+    dryRun = false,
+    blocked = false,
+    report = { input = 'Save.omwsave', dependencies = { 'Tribunal.esm' }, steps = { step } },
+  }
+
+  for key, value in more or {} do
+    (result :: { [string]: unknown })[key] = value
+  end
+
+  result.report.written = result.written
+  return result
+end
+
+-- Each argument list `parse` refuses, and what it says of it.
+local Refused: { { argv: { string }, message: string } } = {
+  { argv = {}, message = 'a command is required: info, check, strip, screenshot, or dump' },
+  {
+    argv = { '--format', 'json' },
+    message = 'a command is required: info, check, strip, screenshot, or dump',
+  },
+  { argv = { 'inspect', 'Save.omwsave' }, message = 'unknown command \'inspect\'' },
+  { argv = { 'Save.omwsave' }, message = 'unknown command \'Save.omwsave\'' },
+  { argv = { 'info' }, message = 'info requires the save\'s path' },
+  { argv = { 'check', '--format', 'json' }, message = 'check requires the save\'s path' },
+  { argv = { 'info', 'a.omwsave', 'b.omwsave' }, message = 'unexpected argument \'b.omwsave\'' },
+  { argv = { 'check', 'a.omwsave', 'b.omwsave' }, message = 'unexpected argument \'b.omwsave\'' },
+  { argv = { 'dump', 'a.omwsave', 'b.omwsave' }, message = 'unexpected argument \'b.omwsave\'' },
+  { argv = { 'info', '--bogus', 'a.omwsave' }, message = 'unknown option \'--bogus\'' },
+  { argv = { 'info', '-x', 'a.omwsave' }, message = 'unknown option \'-x\'' },
+  { argv = { 'info', '--Format', 'json', 'a.omwsave' }, message = 'unknown option \'--Format\'' },
+  { argv = { 'info', '--bogus=1', 'a.omwsave' }, message = 'unknown option \'--bogus=1\'' },
+  { argv = { 'info', '--format' }, message = '--format requires a format: yaml, json, or toml' },
+  { argv = { 'info', '--format=', 'a' }, message = '--format requires a format: yaml, json, or toml' },
+  {
+    argv = { 'info', '--format', '--game', 'openmw', 'a' },
+    message = '--format requires a format: yaml, json, or toml',
+  },
+  { argv = { 'info', '--format', 'xml', 'a' }, message = '--format takes yaml, json, or toml, not \'xml\'' },
+  {
+    argv = { 'info', '--game', 'oblivion', 'a' },
+    message = '--game takes auto, openmw, or morrowind, not \'oblivion\'',
+  },
+  {
+    argv = { 'info', '--encoding', 'utf8', 'a' },
+    message = '--encoding takes win1250, win1251, or win1252, not \'utf8\'',
+  },
+  {
+    argv = { '--format', 'json', 'info', '--format', 'yaml', 'a' },
+    message = '--format can\'t be given more than once',
+  },
+  { argv = { 'info', '--help=me' }, message = '--help takes no value, not \'me\'' },
+  { argv = { 'info', '--config', 'openmw.cfg', 'a' }, message = '--config isn\'t an option of info' },
+  { argv = { 'info', '--dry-run', 'a' }, message = '--dry-run isn\'t an option of info' },
+  { argv = { 'check', '--output', 'b', 'a' }, message = '--output isn\'t an option of check' },
+  { argv = { 'check', '-o', 'b', 'a' }, message = '-o isn\'t an option of check' },
+  { argv = { 'screenshot', '--dry-run', 'a' }, message = '--dry-run isn\'t an option of screenshot' },
+  {
+    argv = { '--dry-run', 'strip', 'a', 'Mod.esp' },
+    message = '--dry-run is an option of strip, and goes after it',
+  },
+  { argv = { '-t', 'PLAY', 'dump', 'a' }, message = '-t is an option of dump, and goes after it' },
+  { argv = { 'check', '--config' }, message = '--config requires an openmw.cfg or its folder' },
+  { argv = { 'strip', 'a.omwsave' }, message = 'strip requires a content file to remove' },
+  { argv = { 'strip' }, message = 'strip requires the save\'s path' },
+  {
+    argv = { 'strip', '--dry-run', '--output', 'b', 'a', 'Mod.esp' },
+    message = '--output can\'t be used with --dry-run',
+  },
+  {
+    argv = { 'strip', '--no-backup', 'a', 'Mod.esp', '--dry-run' },
+    message = '--no-backup can\'t be used with --dry-run',
+  },
+  {
+    argv = { 'strip', '--sample-limit', 'many', 'a', 'Mod.esp' },
+    message = '--sample-limit takes a whole number, not \'many\'',
+  },
+  {
+    argv = { 'strip', '--sample-limit', '-1', 'a', 'Mod.esp' },
+    message = '--sample-limit requires a number',
+  },
+  {
+    argv = { 'strip', '--sample-limit=-1', 'a', 'Mod.esp' },
+    message = '--sample-limit takes a whole number, not \'-1\'',
+  },
+  {
+    argv = { 'strip', '--dry-run', '--dry-run', 'a', 'Mod.esp' },
+    message = '--dry-run can\'t be given more than once',
+  },
+  { argv = { 'strip', '--dry-run=yes', 'a', 'Mod.esp' }, message = '--dry-run takes no value, not \'yes\'' },
+  { argv = { 'screenshot', 'a', 'b', 'c' }, message = 'unexpected argument \'c\'' },
+  {
+    argv = { 'screenshot', '-o', 'b.jpg', 'a', 'c.jpg' },
+    message = 'the output is given twice: --output \'b.jpg\' and \'c.jpg\'',
+  },
+  { argv = { 'screenshot', 'a', '-o' }, message = '-o requires a path' },
+  { argv = { 'dump', '--header', 'a' }, message = '--header requires --raw-output' },
+  { argv = { 'dump', '--no-backup', 'a' }, message = '--no-backup requires --raw-output' },
+  {
+    argv = { 'dump', '--sub-match', 'x', '--sub-match', 'y', 'a' },
+    message = '--sub-match can\'t be given more than once',
+  },
+  { argv = { 'dump', '--type' }, message = '--type requires a record type' },
+  { argv = { 'dump', '--list=1', 'a' }, message = '--list takes no value, not \'1\'' },
+  {
+    argv = { 'completions', 'bash' },
+    message = '\'completions\' isn\'t a tes3-saves command: shell completion scripts were the jess binary\'s to generate (jess completions), and this package generates none',
+  },
+  {
+    argv = { 'man' },
+    message = '\'man\' isn\'t a tes3-saves command: man pages were the jess binary\'s to generate (jess man), and this package generates none',
+  },
+  {
+    argv = { 'help', 'man' },
+    message = '\'man\' isn\'t a tes3-saves command: man pages were the jess binary\'s to generate (jess man), and this package generates none',
+  },
+  { argv = { 'help', 'inspect' }, message = 'unknown command \'inspect\'' },
+  { argv = { 'help', 'info', 'check' }, message = 'unexpected argument \'check\'' },
+}
+
+suite.describe('parse', function()
+  suite.it('reads info, and the options that go anywhere on the line', function()
+    expect(parsed { 'info', 'Save.omwsave' }).toEqual {
+      command = 'info',
+      request = { path = 'Save.omwsave' },
+    }
+
+    local full: cli.Request = {
+      command = 'info',
+      format = 'json',
+      request = { path = 'Quicksave.ess', game = 'morrowind', encoding = 'win1251' },
+    }
+
+    expect(parsed {
+      '--format',
+      'json',
+      '--game',
+      'morrowind',
+      '--encoding',
+      'win1251',
+      'info',
+      'Quicksave.ess',
+    }).toEqual(full)
+
+    expect(parsed {
+      'info',
+      'Quicksave.ess',
+      '--encoding=win1251',
+      '--game=morrowind',
+      '--format=json',
+    }).toEqual(full)
+    expect(parsed { '--game', 'morrowind', 'info', '--format', 'json', '--encoding', 'win1251', 'Quicksave.ess' }).toEqual(
+      full
+    )
+  end)
+
+  suite.it('reads --game auto as no game, and each format', function()
+    expect(parsed { 'info', '--game', 'auto', 'a' }).toEqual { command = 'info', request = { path = 'a' } }
+    expect(parsed { 'info', '--game', 'openmw', 'a' }).toEqual {
+      command = 'info',
+      request = { path = 'a', game = 'openmw' },
+    }
+
+    for _, format in { 'yaml', 'json', 'toml' } do
+      expect(parsed { 'info', 'a', '--format', format }).toEqual {
+        command = 'info',
+        format = format,
+        request = { path = 'a' },
+      }
+    end
+  end)
+
+  suite.it('reads check, with the configuration it is to check against', function()
+    expect(parsed { 'check', 'Save.omwsave' }).toEqual {
+      command = 'check',
+      request = { path = 'Save.omwsave' },
+    }
+
+    expect(parsed { 'check', '--config', '/etc/openmw', 'Save.omwsave' }).toEqual {
+      command = 'check',
+      request = { path = 'Save.omwsave', config = '/etc/openmw' },
+    }
+
+    expect(parsed { 'check', 'Save.omwsave', '--config=/a/b=c/openmw.cfg', '--encoding', 'win1250' }).toEqual {
+      command = 'check',
+      request = { path = 'Save.omwsave', config = '/a/b=c/openmw.cfg', encoding = 'win1250' },
+    }
+  end)
+
+  suite.it('reads strip: the save, then the content files, and its options', function()
+    expect(parsed { 'strip', 'Save.omwsave', 'Bloodmoon.esm', 'Tribunal.esm' }).toEqual {
+      command = 'strip',
+      request = { path = 'Save.omwsave', dependencies = { 'Bloodmoon.esm', 'Tribunal.esm' } },
+    }
+
+    expect(parsed { 'strip', '--dry-run', 'Save.omwsave', 'Tribunal.esm' }).toEqual {
+      command = 'strip',
+      request = { path = 'Save.omwsave', dependencies = { 'Tribunal.esm' }, dryRun = true },
+    }
+
+    expect(parsed {
+      'strip',
+      '--output',
+      'Vanilla.omwsave',
+      '--no-backup',
+      '--sample-limit',
+      '20',
+      '--config',
+      'openmw.cfg',
+      'Save.omwsave',
+      'Tribunal.esm',
+    }).toEqual {
+      command = 'strip',
+      request = {
+        path = 'Save.omwsave',
+        dependencies = { 'Tribunal.esm' },
+        output = 'Vanilla.omwsave',
+        backup = false,
+        sampleLimit = 20,
+        config = 'openmw.cfg',
+      },
+    }
+
+    expect(parsed { 'strip', 'Save.omwsave', '--sample-limit=0', 'Tribunal.esm', '--format', 'json' }).toEqual {
+      command = 'strip',
+      format = 'json',
+      request = { path = 'Save.omwsave', dependencies = { 'Tribunal.esm' }, sampleLimit = 0 },
+    }
+  end)
+
+  suite.it('reads screenshot: the output by either option, or after the save', function()
+    expect(parsed { 'screenshot', 'Save.omwsave' }).toEqual {
+      command = 'screenshot',
+      request = { path = 'Save.omwsave' },
+    }
+
+    local named: cli.Request =
+      { command = 'screenshot', request = { path = 'Save.omwsave', output = 'caius.jpg' } }
+    expect(parsed { 'screenshot', 'Save.omwsave', '--output', 'caius.jpg' }).toEqual(named)
+    expect(parsed { 'screenshot', '-o', 'caius.jpg', 'Save.omwsave' }).toEqual(named)
+    expect(parsed { 'screenshot', '-ocaius.jpg', 'Save.omwsave' }).toEqual(named)
+    expect(parsed { 'screenshot', '-o=caius.jpg', 'Save.omwsave' }).toEqual(named)
+    expect(parsed { 'screenshot', '--output=caius.jpg', 'Save.omwsave' }).toEqual(named)
+    expect(parsed { 'screenshot', 'Save.omwsave', 'caius.jpg' }).toEqual(named)
+    expect(parsed { 'screenshot', '--no-backup', '--output', 'caius.jpg', 'Save.omwsave' }).toEqual {
+      command = 'screenshot',
+      request = { path = 'Save.omwsave', output = 'caius.jpg', backup = false },
+    }
+  end)
+
+  suite.it('reads dump: its selectors, and what to make of the records', function()
+    expect(parsed { 'dump', 'Save.omwsave' }).toEqual {
+      command = 'dump',
+      request = { path = 'Save.omwsave' },
+    }
+
+    expect(parsed { 'dump', '--list', 'Save.omwsave' }).toEqual {
+      command = 'dump',
+      request = { path = 'Save.omwsave', list = true },
+    }
+
+    expect(parsed { 'dump', '--type', 'NPC_', '-t', 'GLOB', '-tPLAY', 'Save.omwsave' }).toEqual {
+      command = 'dump',
+      request = { path = 'Save.omwsave', selectors = { type = { 'NPC_', 'GLOB', 'PLAY' } } },
+    }
+
+    expect(parsed {
+      'dump',
+      '--flag',
+      'deleted',
+      '--flag=persistent',
+      '--id',
+      '^bk_',
+      '--exact-id',
+      'player',
+      '--match',
+      'gold',
+      '--no-match',
+      'iron',
+      '--sub-match',
+      'NAME',
+      '--sub-no-match',
+      'DATA',
+      '--instance-match',
+      'chest',
+      '--instance-no-match',
+      'door',
+      '--interior',
+      '--exterior',
+      '--raw',
+      'Quicksave.ess',
+    }).toEqual {
+      command = 'dump',
+      request = {
+        path = 'Quicksave.ess',
+        raw = true,
+        selectors = {
+          flags = { 'deleted', 'persistent' },
+          id = { '^bk_' },
+          exactId = { 'player' },
+          match = { 'gold' },
+          notMatch = { 'iron' },
+          sub = 'NAME',
+          notSub = 'DATA',
+          instance = 'chest',
+          notInstance = 'door',
+          interior = true,
+          exterior = true,
+        },
+      },
+    }
+
+    expect(parsed { 'dump', '--raw-output', 'out.esp', '--header', '--no-backup', 'Save.omwsave' }).toEqual {
+      command = 'dump',
+      request = { path = 'Save.omwsave', rawOutput = 'out.esp', header = true, backup = false },
+    }
+  end)
+
+  suite.it('takes a value that starts with a dash attached, and arguments after --', function()
+    expect(parsed { 'dump', '--id=-5 4', 'Save.omwsave' }).toEqual {
+      command = 'dump',
+      request = { path = 'Save.omwsave', selectors = { id = { '-5 4' } } },
+    }
+
+    expect(parsed { 'info', '--', '-odd-name.omwsave' }).toEqual {
+      command = 'info',
+      request = { path = '-odd-name.omwsave' },
+    }
+
+    expect(parsed { 'strip', 'Save.omwsave', '--', '--dry-run' }).toEqual {
+      command = 'strip',
+      request = { path = 'Save.omwsave', dependencies = { '--dry-run' } },
+    }
+    expect(parsed { 'info', '-' }).toEqual { command = 'info', request = { path = '-' } }
+  end)
+
+  suite.it('reads help and version wherever they are asked for', function()
+    expect(parsed { '--help' }).toEqual { command = 'help' }
+    expect(parsed { '-h' }).toEqual { command = 'help' }
+    expect(parsed { 'help' }).toEqual { command = 'help' }
+    expect(parsed { 'help', 'strip' }).toEqual { command = 'help', topic = 'strip' }
+    expect(parsed { 'strip', '--help' }).toEqual { command = 'help', topic = 'strip' }
+    expect(parsed { 'dump', '-h', '--list' }).toEqual { command = 'help', topic = 'dump' }
+    expect(parsed { 'info', 'a', 'b', 'c', '-h' }).toEqual { command = 'help', topic = 'info' }
+    expect(parsed { '--version' }).toEqual { command = 'version' }
+    expect(parsed { 'info', '-V' }).toEqual { command = 'version' }
+  end)
+
+  suite.it('refuses what it can\'t read, saying what', function()
+    for _, case in Refused do
+      expect(refusal(case.argv)).toBe(case.message)
+    end
+  end)
+
+  suite.it('leaves the argument list as it was', function()
+    local argv = { 'strip', '--dry-run', 'Save.omwsave', 'Tribunal.esm' }
+    local first, second = parsed(argv), parsed(argv)
+    expect(argv).toEqual { 'strip', '--dry-run', 'Save.omwsave', 'Tribunal.esm' }
+    expect(first).toEqual(second)
+  end)
+end)
+
+suite.describe('render', function()
+  suite.it('writes info as jess save info did, in YAML unless asked', function()
+    expect(cli.render(CaiusMet)).toBe(table.concat({
+      'format: openmw',
+      'format_version: 37',
+      'description: Caius Met',
+      'player:',
+      '  name: Ashur',
+      '  level: 1',
+      '  class_id: Archer',
+      'cell: Balmora, Caius Cosades\' House',
+      'in_game_time:',
+      '  game_hour: 8.372071',
+      '  day: 18',
+      '  month: 7',
+      '  year: 427',
+      'time_played: 4254.171185921878',
+      'dependencies:',
+      '- builtin.omwscripts',
+      '- Morrowind.esm',
+      '- Tribunal.esm',
+      '- Bloodmoon.esm',
+      'screenshot_bytes: 87035',
+      'current_day: 3',
+      'current_health: 55.0',
+      'maximum_health: 55.0',
+      '',
+    }, '\n'))
+    expect(cli.render(CaiusMet, { format = 'yaml' })).toBe(cli.render(CaiusMet))
+  end)
+
+  suite.it('writes compact JSON on one line, and TOML', function()
+    expect(cli.render(CaiusMet, { format = 'json' })).toBe(
+      '{"format":"openmw","format_version":37,"description":"Caius Met",'
+        .. '"player":{"name":"Ashur","level":1,"class_id":"Archer"},'
+        .. '"cell":"Balmora, Caius Cosades\' House",'
+        .. '"in_game_time":{"game_hour":8.372071,"day":18,"month":7,"year":427},'
+        .. '"time_played":4254.171185921878,'
+        .. '"dependencies":["builtin.omwscripts","Morrowind.esm","Tribunal.esm","Bloodmoon.esm"],'
+        .. '"screenshot_bytes":87035,"current_day":3,"current_health":55.0,"maximum_health":55.0}\n'
+    )
+    expect(cli.render(CaiusMet, { format = 'toml' })).toBe(table.concat({
+      'format = "openmw"',
+      'format_version = 37',
+      'description = "Caius Met"',
+      'cell = "Balmora, Caius Cosades\' House"',
+      'time_played = 4254.171185921878',
+      'dependencies = ["builtin.omwscripts", "Morrowind.esm", "Tribunal.esm", "Bloodmoon.esm"]',
+      'screenshot_bytes = 87035',
+      'current_day = 3',
+      'current_health = 55.0',
+      'maximum_health = 55.0',
+      '',
+      '[player]',
+      'name = "Ashur"',
+      'level = 1',
+      'class_id = "Archer"',
+      '',
+      '[in_game_time]',
+      'game_hour = 8.372071',
+      'day = 18',
+      'month = 7',
+      'year = 427',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('leaves out what a Morrowind save doesn\'t have', function()
+    local quicksave: commands.InfoResult = {
+      command = 'info',
+      path = 'Quicksave.ess',
+      info = {
+        format = 'morrowind',
+        description = 'Quicksave',
+        player = { name = 'Nerevar', level = 7, classId = 'Battlemage' },
+        cell = 'Balmora',
+        inGameTime = { gameHour = 9.25, day = 3, month = 1, year = 427 },
+        dependencies = { 'Morrowind.esm' },
+        screenshotBytes = 65536,
+        currentHealth = 30,
+        maximumHealth = 50,
+      },
+    }
+
+    expect(cli.render(quicksave, { format = 'json' })).toBe(
+      '{"format":"morrowind","description":"Quicksave",'
+        .. '"player":{"name":"Nerevar","level":7,"class_id":"Battlemage"},"cell":"Balmora",'
+        .. '"in_game_time":{"game_hour":9.25,"day":3,"month":1,"year":427},'
+        .. '"dependencies":["Morrowind.esm"],"screenshot_bytes":65536,'
+        .. '"current_health":30.0,"maximum_health":50.0}\n'
+    )
+  end)
+
+  suite.it('writes a check of the save alone as jess save check did', function()
+    expect(cli.render(checked {})).toBe(table.concat({
+      'input: Caius_Met.omwsave',
+      'verdict: structure_valid',
+      'format_version: 40',
+      'strippable_format: true',
+      'structure_problems: []',
+      'load_order_checked: false',
+      'missing_content: []',
+      'added_content: []',
+      'order_changed: false',
+      'findings: []',
+      'dropped_on_load: {}',
+      'warnings: []',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('writes a check against a load order: codes in snake_case, counts by name', function()
+    local result = checked {
+      verdict = 'brokenState',
+      formatVersion = 37,
+      loadOrderChecked = true,
+      missingContent = {
+        { name = 'Tribunal.esm', strippable = true },
+        { name = 'Bloodmoon.esm', strippable = true },
+      },
+      findings = {
+        {
+          severity = 'broken',
+          problem = 'npcFollowsOrEscortsMissingTarget',
+          id = 'BM_werewolf_skaal1A3',
+          recordIndex = 234,
+          recordType = 'CSTA',
+          subrecordIndex = 522,
+          subrecordType = 'TARG',
+        },
+      },
+      droppedOnLoad = {
+        spellStateSpell = 16,
+        cellRefBaseObject = 90,
+        globalScript = 8,
+        savedCellState = 6,
+        globalVariable = 70,
+        inventoryItemBaseObject = 170,
+      },
+    }
+
+    expect(cli.render(result)).toBe(table.concat({
+      'input: Caius_Met.omwsave',
+      'verdict: broken_state',
+      'format_version: 37',
+      'strippable_format: true',
+      'structure_problems: []',
+      'load_order_checked: true',
+      'missing_content:',
+      '- name: Tribunal.esm',
+      '  strippable: true',
+      '- name: Bloodmoon.esm',
+      '  strippable: true',
+      'added_content: []',
+      'order_changed: false',
+      'findings:',
+      '- severity: broken',
+      '  problem: npc_follows_or_escorts_missing_target',
+      '  id: BM_werewolf_skaal1A3',
+      '  record_index: 234',
+      '  record_type: CSTA',
+      '  subrecord_index: 522',
+      '  subrecord_type: TARG',
+      'dropped_on_load:',
+      '  cell_ref_base_object: 90',
+      '  global_script: 8',
+      '  global_variable: 70',
+      '  inventory_item_base_object: 170',
+      '  saved_cell_state: 6',
+      '  spell_state_spell: 16',
+      'warnings: []',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('writes a screenshot\'s report, with the backup when there was one', function()
+    local result: commands.ScreenshotResult = {
+      command = 'screenshot',
+      path = 'Caius_Met.omwsave',
+      format = 'jpeg',
+      bytes = 87035,
+      output = 'caius.jpg',
+      dryRun = false,
+      written = { path = 'caius.jpg' },
+    }
+
+    expect(cli.render(result)).toBe 'input: Caius_Met.omwsave\nformat: jpeg\nbytes: 87035\nwritten:\n  path: caius.jpg\n'
+    result.written = { path = 'caius.jpg', backup = 'caius.jpg.bak' }
+    expect(cli.render(result, { format = 'json' })).toBe '{"input":"Caius_Met.omwsave","format":"jpeg","bytes":87035,"written":{"path":"caius.jpg","backup":"caius.jpg.bak"}}\n'
+  end)
+
+  suite.it('writes a strip\'s plan: its mode in kebab-case, its codes as jess-save spelled them', function()
+    local result = stripped({
+      dependency = 'Tribunal.esm',
+      mode = 'dryRun',
+      dependencyIndex = 1,
+      dependenciesBefore = 2,
+      dependenciesAfter = 1,
+      requiresContentFileIndexRemapping = false,
+      saveFormat = {
+        formatVersion = 40,
+        engineMinSupported = 5,
+        engineCurrent = 40,
+        mutationStatus = 'supported',
+        reason = 'currentOpenmwSaveFormat',
+      },
+      targetResolution = { status = 'disabled' },
+      dependents = {},
+      referenceCoverage = {
+        status = 'knownFields',
+        knownScans = { 'openmwRefidNameFields', 'openmwLuaSerializedData' },
+        unclassifiedRiskyRecords = { LUAM = 2 },
+      },
+      blockers = {
+        status = 'blocked',
+        hard = {
+          {
+            kind = 'targetRefIdsWithIncompletePriorProvenance',
+            count = 3,
+            action = 'resolveAndParseEveryPriorDependency',
+          },
+        },
+        informational = {},
+        protected = {},
+      },
+      plannedOperations = {
+        {
+          name = 'removeDependencyFromSaveDepe',
+          status = 'planned',
+          count = 1,
+          reason = 'requestedDependencyEntryWouldBeRemovedFrom_SAVE_DEPE',
+        },
+      },
+      plannedEdits = {
+        {
+          operation = 'remapContentFileIndex',
+          status = 'planned',
+          recordIndex = 4,
+          recordType = 'LUAM',
+          subrecordIndex = 0,
+          subrecordType = 'LUAD',
+          meaning = 'luaObjectRefnum',
+          localIndex = 42,
+          oldContentFileIndex = 2,
+          newContentFileIndex = 1,
+          reason = 'contentFileIndexShiftsAfter_SAVE_DEPERemoval',
+        },
+      },
+      mutationReadiness = {
+        status = 'blocked',
+        canAttemptDryRun = false,
+        reason = 'hardBlockersPresent',
+        referenceCoverage = 'knownFields',
+      },
+      dryRun = { requested = true, status = 'blocked', reason = 'hardBlockersPresent', output = 'none' },
+      mutation = 'dryRunOnly',
+      warnings = { 'a warning, as it was written' },
+    }, { dryRun = true, blocked = true })
+
+    expect(cli.render(result)).toBe(table.concat({
+      'input: Save.omwsave',
+      'dependencies:',
+      '- Tribunal.esm',
+      'steps:',
+      '- dependency: Tribunal.esm',
+      '  mode: dry-run',
+      '  dependency_index: 1',
+      '  dependencies_before: 2',
+      '  dependencies_after: 1',
+      '  requires_content_file_index_remapping: false',
+      '  save_format:',
+      '    format_version: 40',
+      '    engine_min_supported: 5',
+      '    engine_current: 40',
+      '    mutation_status: supported',
+      '    reason: current_openmw_save_format',
+      '  target_resolution:',
+      '    status: disabled',
+      '  dependents: []',
+      '  reference_coverage:',
+      '    status: known_fields',
+      '    known_scans:',
+      '    - openmw_refid_name_fields',
+      '    - openmw_lua_serialized_data',
+      '    unclassified_risky_records:',
+      '      LUAM: 2',
+      '  blockers:',
+      '    status: blocked',
+      '    hard:',
+      '    - kind: target_ref_ids_with_incomplete_prior_provenance',
+      '      count: 3',
+      '      action: resolve_and_parse_every_prior_dependency',
+      '    informational: []',
+      '    protected: []',
+      '  planned_operations:',
+      '  - name: remove_dependency_from_save_depe',
+      '    status: planned',
+      '    count: 1',
+      '    reason: requested_dependency_entry_would_be_removed_from_SAVE_DEPE',
+      '  planned_edits:',
+      '  - operation: remap_content_file_index',
+      '    status: planned',
+      '    record_index: 4',
+      '    record_type: LUAM',
+      '    subrecord_index: 0',
+      '    subrecord_type: LUAD',
+      '    meaning: lua_object_refnum',
+      '    local_index: 42',
+      '    old_content_file_index: 2',
+      '    new_content_file_index: 1',
+      '    reason: content_file_index_shifts_after_SAVE_DEPE_removal',
+      '  mutation_readiness:',
+      '    status: blocked',
+      '    can_attempt_dry_run: false',
+      '    reason: hard_blockers_present',
+      '    reference_coverage: known_fields',
+      '  dry_run:',
+      '    requested: true',
+      '    status: blocked',
+      '    reason: hard_blockers_present',
+      '    output: none',
+      '  mutation: dry_run_only',
+      '  warnings:',
+      '  - a warning, as it was written',
+      'written: null',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('says where a strip wrote, and leaves a null out of TOML', function()
+    local step = { dependency = 'Tribunal.esm', mode = 'inPlace', mutation = 'written', warnings = {} }
+    local written = stripped(step, { written = { path = 'Save.omwsave', backup = 'Save.omwsave.bak' } })
+    expect(cli.render(written, { format = 'json' })).toBe(
+      '{"input":"Save.omwsave","dependencies":["Tribunal.esm"],'
+        .. '"steps":[{"dependency":"Tribunal.esm","mode":"in-place","mutation":"written","warnings":[]}],'
+        .. '"written":{"path":"Save.omwsave","backup":"Save.omwsave.bak"}}\n'
+    )
+
+    local blocked = stripped(step, { blocked = true })
+    expect(cli.render(blocked, { format = 'json' })).toContain '"written":null}'
+    expect(cli.render(blocked, { format = 'toml' })).toBe(table.concat({
+      'input = "Save.omwsave"',
+      'dependencies = ["Tribunal.esm"]',
+      '',
+      '[[steps]]',
+      'dependency = "Tribunal.esm"',
+      'mode = "in-place"',
+      'mutation = "written"',
+      'warnings = []',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('writes a dump\'s records as jess save dump did', function()
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Caius_Met.omwsave',
+      mode = 'records',
+      records = {
+        fields({ 'record', 'type', 'subrecords' }, {
+          335,
+          'PLAY',
+          list {
+            fields({ 'FRMR' }, { '1 (generated)' }, true),
+            fields({ 'NAME' }, { 'player' }, true),
+            fields(
+              { 'DATA' },
+              {
+                fields({ 'position', 'rotation' }, {
+                  list { float(0), float(0), float(0) },
+                  list { float(0), float(0), float(0) },
+                }),
+              },
+              true
+            ),
+            fields({ 'LUAS' }, { '0 (scripts/omw/mwui/init.lua)' }, true),
+            fields({ 'LUAD' }, { fields({}, {}, true) }, true),
+            fields({ 'LUAS' }, { '13 (scripts/omw/input/playercontrols.lua)' }, true),
+            fields({ 'LUAD' }, { fields({ 'sneaking' }, { false }, true) }, true),
+          },
+        }),
+      },
+    }
+
+    expect(cli.render(result)).toBe(table.concat({
+      'records:',
+      '- record: 335',
+      '  type: PLAY',
+      '  subrecords:',
+      '  - FRMR: 1 (generated)',
+      '  - NAME: player',
+      '  - DATA:',
+      '      position: [0.0, 0.0, 0.0]',
+      '      rotation: [0.0, 0.0, 0.0]',
+      '  - LUAS: 0 (scripts/omw/mwui/init.lua)',
+      '  - LUAD: {}',
+      '  - LUAS: 13 (scripts/omw/input/playercontrols.lua)',
+      '  - LUAD:',
+      '      sneaking: false',
+      '',
+    }, '\n'))
+    expect(cli.render(result, { format = 'json' })).toBe(
+      '{"records":[{"record":335,"type":"PLAY","subrecords":[{"FRMR":"1 (generated)"},'
+        .. '{"NAME":"player"},{"DATA":{"position":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0]}},'
+        .. '{"LUAS":"0 (scripts/omw/mwui/init.lua)"},{"LUAD":{}},'
+        .. '{"LUAS":"13 (scripts/omw/input/playercontrols.lua)"},{"LUAD":{"sneaking":false}}]}]}\n'
+    )
+  end)
+
+  suite.it('spells a dump\'s values so they read back: field names, floats, text, keys', function()
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Save.omwsave',
+      mode = 'records',
+      records = {
+        fields({
+          'record',
+          'type',
+          'id',
+          'aiData',
+          'weight',
+          'tiny',
+          'huge',
+          'missing',
+          'text',
+          'grid',
+          'words',
+          'long',
+          'nested',
+          'script',
+        }, {
+          7,
+          'Npc',
+          'Seyda Neen, Arrille',
+          fields({ 'hello', 'fleeChance' }, { 30, 0.5 }),
+          float(single(0.1)),
+          float(single(0.00001)),
+          float(123456789012345680000),
+          { kind = 'null' },
+          'yes',
+          list { -2, -9 },
+          list { 'regenerate [ability]', '123', 'plain text' },
+          list { string.rep('a', 60), string.rep('b', 60) },
+          list { list { 1, 2 }, list { fields({ 'x' }, { 1 }) }, fields({ 'x' }, { 1 }) },
+          'begin test\r\nend',
+        }),
+        fields({ 'LUAD' }, {
+          fields({ 'questStage', '5', '123abc', 'a: b' }, { 20, true, float(2.5), 'x' }, true),
+        }, true),
+      },
+    }
+
+    expect(cli.render(result)).toBe(table.concat({
+      'records:',
+      '- record: 7',
+      '  type: Npc',
+      '  id: \'Seyda Neen, Arrille\'',
+      '  ai_data:',
+      '    hello: 30',
+      '    flee_chance: 0.5',
+      '  weight: 0.1',
+      '  tiny: 1.0e-5',
+      '  huge: 1.2345678901234568e20',
+      '  missing: null',
+      '  text: \'yes\'',
+      '  grid: [-2, -9]',
+      '  words: [\'regenerate [ability]\', \'123\', plain text]',
+      '  long:',
+      '  - ' .. string.rep('a', 60),
+      '  - ' .. string.rep('b', 60),
+      '  nested:',
+      '  - [1, 2]',
+      '  -',
+      '    - x: 1',
+      '  - x: 1',
+      '  script: |-',
+      '    begin test',
+      '    end',
+      '- LUAD:',
+      '    questStage: 20',
+      '    5: true',
+      '    123abc: 2.5',
+      '    \'a: b\': x',
+      '',
+    }, '\n'))
+  end)
+
+  suite.it('writes a listing, and no records at all', function()
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Save.omwsave',
+      mode = 'list',
+      listed = { { record = 0, type = 'TES3' }, { record = 2, type = 'NPC_', id = 'player' } },
+    }
+
+    expect(cli.render(result)).toBe 'records:\n- record: 0\n  type: TES3\n- record: 2\n  type: NPC_\n  id: player\n'
+    expect(cli.render(result, { format = 'json' })).toBe '{"records":[{"record":0,"type":"TES3"},{"record":2,"type":"NPC_","id":"player"}]}\n'
+    result.listed = {}
+    expect(cli.render(result)).toBe 'records: []\n'
+    expect(cli.render(result, { format = 'json' })).toBe '{"records":[]}\n'
+    expect(cli.render(result, { format = 'toml' })).toBe 'records = []\n'
+  end)
+
+  suite.it('writes a byte layout as JSON unless a format is asked for', function()
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Morrowind.esm',
+      mode = 'layout',
+      layouts = {
+        {
+          index = 3002,
+          type = 'MISC',
+          id = 'Misc_SoulGem_Grand',
+          flags = 0,
+          size = 134,
+          range = { start = 1057313, ['end'] = 1057463 },
+          subrecords = {
+            {
+              index = 0,
+              type = 'NAME',
+              size = 19,
+              range = { start = 1057329, ['end'] = 1057356 },
+              field = 'id',
+              value = 'Misc_SoulGem_Grand',
+            },
+            {
+              index = 1,
+              type = 'SCTX',
+              size = 25,
+              range = { start = 1057356, ['end'] = 1057389 },
+              field = 'scriptText',
+              value = 'm\\Misc_soulgem_grand.NIF',
+            },
+            { index = 2, type = 'DATA', size = 8, range = { start = 1057389, ['end'] = 1057405 } },
+          },
+        },
+      },
+    }
+
+    expect(cli.render(result)).toBe(
+      '{"records":[{"index":3002,"type":"MISC","id":"Misc_SoulGem_Grand","flags":0,"size":134,'
+        .. '"range":{"start":1057313,"end":1057463},"subrecords":['
+        .. '{"index":0,"type":"NAME","size":19,"range":{"start":1057329,"end":1057356},"field":"id","value":"Misc_SoulGem_Grand"},'
+        .. '{"index":1,"type":"SCTX","size":25,"range":{"start":1057356,"end":1057389},"field":"script_text","value":"m\\\\Misc_soulgem_grand.NIF"},'
+        .. '{"index":2,"type":"DATA","size":8,"range":{"start":1057389,"end":1057405}}]}]}\n'
+    )
+    expect(cli.render(result, { format = 'yaml' })).toContain '- index: 3002\n  type: MISC\n  id: Misc_SoulGem_Grand\n  flags: 0\n  size: 134\n  range:\n    start: 1057313\n    end: 1057463\n  subrecords:\n  - index: 0\n    type: NAME\n'
+  end)
+
+  suite.it('writes what an extraction wrote, as jess save dump --raw-output did', function()
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Save.omwsave',
+      mode = 'extract',
+      bytes = 22276,
+      output = 'histories.esp',
+      dryRun = false,
+      written = { path = 'histories.esp' },
+    }
+
+    expect(cli.render(result)).toBe 'input: Save.omwsave\npath: Save.omwsave\nbytes: 22276\nwritten:\n  path: histories.esp\n'
+  end)
+end)
+
+suite.describe('status', function()
+  suite.it('is 1 for a check of a save that can\'t load, and 0 for one that can', function()
+    expect(cli.status(checked {})).toBe(0)
+    expect(cli.status(checked { verdict = 'brokenState' })).toBe(0)
+    expect(cli.status(checked { verdict = 'loadsWithWarnings' })).toBe(0)
+    expect(cli.status(checked { verdict = 'willNotLoad', loads = false })).toBe(1)
+    expect(cli.status(checked { verdict = 'invalidStructure', loads = false })).toBe(1)
+  end)
+
+  suite.it('is 1 for a strip that was blocked, unless it was a dry run', function()
+    expect(cli.status(stripped({}, { written = { path = 'Save.omwsave' } }))).toBe(0)
+    expect(cli.status(stripped({}, { blocked = true }))).toBe(1)
+    expect(cli.status(stripped({}, { blocked = true, dryRun = true }))).toBe(0)
+    expect(cli.status(stripped({}, { dryRun = true }))).toBe(0)
+  end)
+
+  suite.it('is 0 for everything a command only reports', function()
+    expect(cli.status(CaiusMet)).toBe(0)
+    expect(cli.status { command = 'dump', path = 'a', mode = 'list', listed = {} }).toBe(0)
+    expect(cli.status {
+      command = 'screenshot',
+      path = 'a',
+      format = 'tga',
+      bytes = 1,
+      output = 'a.tga',
+      dryRun = true,
+    }).toBe(0)
+  end)
+end)
+
+suite.describe('run', function()
+  suite.it(
+    'numbers its exit statuses as the other command targets do, with 1 for what a command found',
+    function() expect(cli.Exit).toEqual { ok = 0, found = 1, invalidInput = 8, runtime = 9 } end
+  )
+
+  suite.it('states the version the manifest states', function()
+    local source = debug.info(1, 's')
+    local first = string.sub(source, 1, 1)
+    local path = if first == '@' or first == '=' then string.sub(source, 2) else source
+    local package = string.match(path, '^(.*)/tests/[^/]*$') or '.'
+    local manifest = jess.toml.decode(assert(jess.fs.read(`{package}/jess.toml`)))
+    expect(cli.Version).toBe((manifest.package :: { version: string }).version)
+  end)
+
+  suite.it('returns 0 for help and for the version', function()
+    expect(cli.run { '--help' }).toBe(0)
+    expect(cli.run { 'help', 'strip' }).toBe(0)
+    expect(cli.run { 'check', '-h' }).toBe(0)
+    expect(cli.run { '--version' }).toBe(0)
+  end)
+
+  suite.it('gives each command\'s help its own options, and the whole help all of them', function()
+    local strip = cli.usage 'strip'
+    expect(strip).toContain 'tes3-saves strip [--dry-run] [--output <OUTPUT>] [--no-backup] [--sample-limit <N>]'
+    expect(strip).toContain '--sample-limit <N>  How many example record ids each part of the plan lists. [default: 5]'
+    expect(strip).toContain 'Exit status: 0 done; 1 check found a save that can\'t load'
+    expect(string.find(strip, '--raw-output', 1, true)).toBeNil()
+    local whole = cli.usage()
+    for _, option in { '--format', '--game', '--encoding', '--config', '--dry-run', '--raw-output', '--instance-no-match', '-o, --output', '-t, --type' } do
+      expect(whole).toContain(option)
+    end
+  end)
+
+  suite.it('returns 8 for every command line parse refuses', function()
+    for _, case in Refused do
+      expect(cli.run(case.argv)).toBe(8)
+    end
+  end)
+
+  suite.it('returns 9 for a save that isn\'t there, isn\'t a save, or is the other game\'s', function()
+    local folder = disk.folder 'cli-run-failures'
+    expect(cli.run { 'info', jess.fs.join(folder, 'Nowhere.omwsave') }).toBe(9)
+    local garbage = disk.write(jess.fs.join(folder, 'Garbage.omwsave'), 'not a save at all')
+    expect(cli.run { 'info', garbage }).toBe(9)
+    local quicksave = disk.write(jess.fs.join(folder, 'Quicksave.ess'), fixtures.morrowindSave())
+    expect(cli.run { 'info', '--game', 'openmw', quicksave }).toBe(9)
+    expect(cli.run { 'info', '--game', 'morrowind', quicksave }).toBe(0)
+    -- Check and strip read the OpenMW load order and save layout, so they refuse Morrowind saves.
+    expect(cli.run { 'check', quicksave }).toBe(9)
+    expect(cli.run { 'strip', '--dry-run', quicksave, 'Morrowind.esm' }).toBe(9)
+    expect(cli.run { 'dump', '--id', '(', quicksave }).toBe(9)
+    local left = jess.fs.list(folder)
+    table.sort(left)
+    expect(left).toEqual { 'Garbage.omwsave', 'Quicksave.ess' }
+  end)
+
+  suite.it('returns 9 for a configuration that isn\'t there, and writes nothing', function()
+    local laid = disk.install('typed-refids', 'cli-run-config')
+    expect(cli.run { 'check', '--config', jess.fs.join(laid.root, 'nowhere'), laid.save }).toBe(9)
+    expect(cli.run { 'strip', '--config', laid.data, laid.save, 'Tribunal.esm' }).toBe(9)
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+    expect(jess.fs.exists(laid.save .. '.bak')).toBe(false)
+  end)
+
+  suite.it('checks the save alone without a configuration, and exits 1 when it can\'t load', function()
+    -- `jess package test` grants no process.environment, so OPENMW_CONFIG can't name one here.
+    local sound = saved('cli-run-check', fixtures.save())
+    expect(cli.run { 'check', sound }).toBe(0)
+    local document, status = printed { '--format', 'json', 'check', sound }
+    local report = json.decode(document) :: { [string]: unknown }
+    expect(status).toBe(0)
+    expect(report.verdict).toBe 'structure_valid'
+    expect(report.load_order_checked).toBe(false)
+
+    local dangling = disk.install('dangling-mvrf', 'cli-run-check-mvrf').save
+    expect(cli.run { '--format', 'json', 'check', dangling }).toBe(1)
+    document, status = printed { '--format', 'json', 'check', dangling }
+    report = json.decode(document) :: { [string]: unknown }
+    expect(status).toBe(1)
+    expect(report.verdict).toBe 'invalid_structure'
+    expect((report.structure_problems :: { string })[1]).toContain '#2 CSTA MVRF #0 is not followed by NAME'
+
+    local incomplete = disk.install('incomplete-csta', 'cli-run-check-csta').save
+    expect(cli.run { 'check', incomplete }).toBe(1)
+    expect((printed { 'check', incomplete })).toContain 'CSTA OBJE #0 FRMR #1 is not followed by NAME'
+  end)
+
+  suite.it('checks against the load order --config names', function()
+    local laid = disk.install('check-what-breaks', 'cli-run-check-config')
+    expect(cli.run { 'check', '--config', laid.config, laid.save }).toBe(1)
+    local document, status = printed { 'check', laid.save, '--config', laid.root }
+    expect(status).toBe(1)
+    expect(document).toContain 'verdict: will_not_load\n'
+    expect(document).toContain 'load_order_checked: true\n'
+    expect(document).toContain 'missing_content:\n- name: Gone.esp\n  strippable: true\n- name: Unticked.esp\n  strippable: true\n'
+    expect(document).toContain '- severity: will_not_load\n  problem: missing_birthsign\n  id: gone_sign\n'
+    expect(document).toContain 'dropped_on_load:\n  spell_state_spell: 1\n'
+  end)
+
+  suite.it('prints info as YAML, JSON, and TOML', function()
+    local path = saved('cli-run-info', fixtures.save())
+    expect(cli.run { 'info', path }).toBe(0)
+    local yaml = printed { 'info', path }
+    for _, line in {
+      'format: openmw\n',
+      `format_version: {fixtures.CurrentFormatVersion}\n`,
+      'player:\n',
+      '  name: Tester\n',
+      '  class_id: Archer\n',
+      '  class_name: Pilgrim\n',
+      'in_game_time:\n',
+      '  game_hour: 8.5\n',
+      '  year: 427\n',
+      'screenshot_bytes: 4\n',
+    } do
+      expect(yaml).toContain(line)
+    end
+
+    local compact = printed { 'info', '--format', 'json', path }
+    expect(compact).toContain '"format":"openmw"'
+    expect(compact).toContain(`"format_version":{fixtures.CurrentFormatVersion}`)
+    expect(compact).toContain '"name":"Tester"'
+    expect(compact).toContain '"class_id":"Archer"'
+    expect(compact).toContain '"in_game_time":{"game_hour":8.5,"day":18,"month":7,"year":427}'
+    expect(compact).toContain '"current_health":42.0'
+
+    local toml = printed { 'info', '--format', 'toml', path }
+    expect(toml).toContain 'format = "openmw"'
+    expect(toml).toContain(`format_version = {fixtures.CurrentFormatVersion}`)
+    expect(toml).toContain '[player]'
+    expect(toml).toContain 'class_id = "Archer"'
+    expect(toml).toContain '[in_game_time]'
+    expect(toml).toContain 'year = 427'
+  end)
+
+  suite.it('reads a save in win1252 unless --encoding names another code page', function()
+    local bytes = string.gsub(fixtures.morrowindSave(), 'Balmora', '\193\224\235\236\238\240\224', 1)
+    local path = saved('cli-run-encoding', bytes, 'Quicksave.ess')
+    local function cell(argv: { string }): unknown
+      return (json.decode((printed(argv))) :: { [string]: unknown }).cell
+    end
+
+    expect(cell { '--format', 'json', 'info', path }).toBe 'Áàëìîðà'
+    expect(cell { '--format', 'json', 'info', '--encoding', 'win1251', path }).toBe 'Балмора'
+  end)
+
+  suite.it('extracts the screenshot where it is told, and beside the save when it isn\'t', function()
+    local path = saved('cli-run-screenshot', fixtures.save())
+    local folder = jess.fs.parent(path) :: string
+    local output = jess.fs.join(folder, 'shot.jpg')
+    expect(cli.run { '--format', 'json', 'screenshot', path, output }).toBe(0)
+    expect(disk.read(output)).toBe '\255\216\255\217'
+
+    -- Extracting again backs up the file it replaces.
+    expect(cli.run { '--format', 'json', 'screenshot', path, output }).toBe(0)
+    expect(disk.read(output .. '.bak')).toBe '\255\216\255\217'
+
+    -- --output names the file too, and --no-backup replaces it without a copy.
+    expect(cli.run { '--format', 'json', 'screenshot', '--no-backup', '--output', output, path }).toBe(0)
+    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+
+    -- Without an output, the image goes next to the save.
+    expect(cli.run { 'screenshot', path }).toBe(0)
+    expect(disk.read(jess.fs.join(folder, 'Save.jpg'))).toBe '\255\216\255\217'
+
+    local document = printed { '--format', 'json', 'screenshot', '--no-backup', '-o', output, path }
+    expect(json.decode(document)).toEqual {
+      input = path,
+      format = 'jpeg',
+      bytes = 4,
+      written = { path = output },
+    }
+  end)
+
+  suite.it('dumps save records readably', function()
+    local path = saved('cli-run-dump', dumps.readable())
+    expect(cli.run { 'dump', '--type', 'PLAY', path }).toBe(0)
+    local play = printed { 'dump', '--type', 'PLAY', path }
+    for _, expected in {
+      '  - FRMR: 1 (generated)\n',
+      '  - NAME: player\n',
+      '  - DATA:\n      position: [1.5, 2.0, 3.25]\n      rotation: [0.0, 0.0, 1.5]\n',
+      '  - LUAS: 1 (scripts/quests.lua)\n',
+      '  - LUAD:\n      stage: 20\n      giver:\n        object:\n          index: 7\n          content_file: 1\n',
+      '  - FRMR: 42 (Tribunal.esm)\n',
+      '  - NAME: tribunal_sword\n',
+    } do
+      expect(play).toContain(expected)
+    end
+
+    local header = printed { 'dump', '--type', 'SAVE', path }
+    expect(header).toContain '  type: SaveHeader\n'
+    expect(header).toContain '  dependencies: [Morrowind.esm, Tribunal.esm]\n'
+
+    -- Byte layouts are JSON for programs.
+    local layout = json.decode((printed { 'dump', '--raw', '--type', 'PLAY', path })) :: { [string]: any }
+    local first = layout.records[1].subrecords[1]
+    expect(first.type).toBe 'FRMR'
+    expect(first.size).toBe(8)
+  end)
+
+  suite.it('dumps dynamic records, whose ids are typed RefIds', function()
+    local path = saved('cli-run-dump-dynamic', dumps.dynamic())
+    local document = printed { 'dump', '--type', 'NPC_', '--type', 'GLOB', path }
+    for _, expected in {
+      '  type: Npc\n  id: player\n  name: Ashur\n',
+      '  - id: iron dagger\n    count: 3\n',
+      '  spells: [fireball]\n',
+      '  race: Dark Elf\n',
+      '  type: GlobalVariable\n  id: TimesDied\n',
+    } do
+      expect(document).toContain(expected)
+    end
+  end)
+
+  suite.it('lists a save\'s records', function()
+    local path = saved('cli-run-dump-list', fixtures.save())
+    expect(cli.run { 'dump', '--list', path }).toBe(0)
+    expect((printed { 'dump', '--list', path })).toBe 'records:\n- record: 0\n  type: TES3\n- record: 1\n  type: SAVE\n'
+  end)
+
+  suite.it('dumps a Morrowind save, and gives its screenshot as a TGA', function()
+    local path = saved('cli-run-morrowind', fixtures.morrowindSave(), 'Quicksave.ess')
+    local records = (json.decode((printed { '--format', 'json', 'dump', path })) :: { [string]: any }).records
+    expect(#records).toBe(5)
+    expect(records[1].type).toBe 'SaveHeader'
+    expect(records[1].player.name).toBe 'Nerevar'
+    expect(records[2].type).toBe 'GlobalVariable'
+    expect(records[5].type).toBe 'Npc'
+
+    local raw = json.decode((printed { '--format', 'json', 'dump', '--raw', path })) :: { [string]: any }
+    expect(raw.records[1].type).toBe 'TES3'
+
+    local screenshot = jess.fs.join(jess.fs.parent(path) :: string, 'shot.tga')
+    expect(cli.run { '--format', 'json', 'screenshot', path, screenshot }).toBe(0)
+    local tga = disk.read(screenshot)
+    expect(#tga).toBe(18 + 128 * 128 * 3)
+    expect(string.byte(tga, 3)).toBe(2)
+  end)
+
+  suite.it('strips a save in place after a backup, and to an output when asked', function()
+    local laid = disk.install('typed-refids', 'cli-run-strip')
+    local argv = { 'strip', '--config', laid.config, laid.save, 'Tribunal.esm' }
+    expect(cli.run { 'strip', '--dry-run', '--config', laid.config, laid.save, 'Tribunal.esm' }).toBe(0)
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+
+    local output = jess.fs.join(laid.root, 'Vanilla.omwsave')
+    expect(cli.run { 'strip', '--config', laid.config, '--output', output, laid.save, 'Tribunal.esm' }).toBe(0)
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+    expect(saves.info(saves.open(output)).dependencies).toEqual { 'Morrowind.esm' }
+
+    expect(cli.run(argv)).toBe(0)
+    expect(disk.read(laid.save .. '.bak') == laid.bytes).toBe(true)
+    expect(disk.read(laid.save) == disk.read(output)).toBe(true)
+  end)
+
+  suite.it('exits 1 for a strip that is blocked and writes nothing, and 0 when that was a dry run', function()
+    local laid = disk.install('player-record', 'cli-run-strip-blocked')
+    expect(cli.run { 'strip', '--config', laid.config, laid.save, 'Races.esp' }).toBe(1)
+    expect(cli.run { 'strip', '--dry-run', '--config', laid.config, laid.save, 'Races.esp' }).toBe(0)
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+    expect(jess.fs.exists(laid.save .. '.bak')).toBe(false)
+
+    local document, status = printed { '--format', 'json', 'strip', '--config', laid.config, laid.save, 'Races.esp' }
+    local report = json.decode(document) :: { [string]: any }
+    expect(status).toBe(1)
+    expect(document).toContain '"written":null}'
+    expect(report.steps[1].mode).toBe 'in-place'
+    expect(report.steps[1].mutation_readiness.can_attempt_dry_run).toBe(false)
+  end)
+
+  suite.it('returns 9 for a strip whose output is the save, or of a content file the save lacks', function()
+    local path = saved('cli-run-strip-refused', fixtures.save())
+    expect(cli.run { 'strip', '--output', path, path, 'Morrowind.esm' }).toBe(9)
+    expect(cli.run { 'strip', '--dry-run', path, 'Nope.esp' }).toBe(9)
+    expect(disk.read(path) == fixtures.save()).toBe(true)
+  end)
+end)
+
+return suite

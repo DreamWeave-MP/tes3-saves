@@ -1,0 +1,691 @@
+--!strict
+--!native
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+
+--[=[
+@tes3-saves/cli: the `tes3-saves` command line, which is `jess save` under the package's name.
+
+  parse(argv) -> (request, nil) | (nil, message)
+  render(result, options) -> text
+  status(result) -> exit status
+  run(argv) -> exit status
+
+  tes3-saves [--format <FORMAT>] [--game <GAME>] [--encoding <ENCODING>] <COMMAND>
+  tes3-saves info <INPUT>
+  tes3-saves check [--config <PATH>] <INPUT>
+  tes3-saves strip [--dry-run] [--output <OUTPUT>] [--no-backup] [--sample-limit <N>]
+                   [--config <PATH>] <INPUT> <DEPENDENCY>...
+  tes3-saves screenshot [-o, --output <OUTPUT>] [--no-backup] <INPUT> [OUTPUT]
+  tes3-saves dump [SELECTORS] [--list] [--raw] [--raw-output <PATH> [--header] [--no-backup]]
+                  <INPUT>
+  tes3-saves help [COMMAND]
+
+This is a presentation of @tes3-saves/commands and nothing more. `parse` reads an argument list
+into the request the command of that name takes, touching no file; the commands module does the
+work; `render` is its result as the document `jess save` printed, in YAML, JSON, or TOML; `status`
+is the exit status that outcome had. `run` is the four in a row, with standard output and error.
+
+The commands and their options are `jess save`'s, read off its clap definitions: the same names,
+short forms, defaults, and value syntax (`--name value` or `--name=value`, `-o value`, `-ovalue`,
+or `-o=value`, and `--` before arguments that start with a dash). `--format`, which was jess's
+own option, and `--game` and `--encoding`, which were `jess save`'s, go anywhere on the line; a
+command's own options follow the command. An option that takes one value is given once.
+
+One thing is new. `jess save` read no OpenMW configuration, so its `check` could only look at the
+save itself and its `strip` could not tell which records came from the file it removed. `check`
+and `strip` take `--config <openmw.cfg or its folder>` here, and failing that the configuration
+`OPENMW_CONFIG` names; with neither they do what `jess save` did. There is no default
+configuration.
+
+`completions` and `man` were commands of the jess binary, not of `jess save`; they are refused by
+name, as this package generates neither.
+
+Exit statuses: 0 when the command did what it was asked; 1 where `jess save` exited 1 for what it
+found (`check` on a save that can't load, `strip` that was blocked and wrote nothing, unless it
+was a dry run); 8 when the command line can't be used; 9 when the command failed (a file that
+isn't there or isn't a save, a configuration that can't be loaded, a file that can't be written).
+The document goes to standard output. Messages go to standard error as `tes3-saves: <message>`.
+]=]
+
+local Commands = require './commands'
+local Render = require './render'
+local process = require '@dream/process'
+
+export type Format = Render.Format
+
+--- An argument list read: the command it names, with the request `@tes3-saves/commands` takes for
+--- it and the format to print its result in.
+export type Request =
+  { command: 'help', topic: string? }
+  | { command: 'version' }
+  | { command: 'info', format: Format?, request: Commands.InfoRequest }
+  | { command: 'check', format: Format?, request: Commands.CheckRequest }
+  | { command: 'strip', format: Format?, request: Commands.StripRequest }
+  | { command: 'screenshot', format: Format?, request: Commands.ScreenshotRequest }
+  | { command: 'dump', format: Format?, request: Commands.DumpRequest }
+
+local Exit = table.freeze { ok = 0, found = 1, invalidInput = 8, runtime = 9 }
+
+--- The package's version, which the manifest also states.
+local Version = '0.1.0'
+
+local Summary = [[
+tes3-saves: inspect, check, and strip save files (jess save, as a command of its own)
+
+  tes3-saves [--format <FORMAT>] [--game <GAME>] [--encoding <ENCODING>] <COMMAND>
+
+Commands:
+  info        The save's character, place, time, and the content files it needs.
+  check       Check whether a save is sound: damage, and what it needs that the save alone can
+              show. Exits 1 when it can't load.
+  strip       Remove content files from a save, fixing or refusing state that depends on them.
+  screenshot  Extract the save's screenshot: a JPEG from OpenMW saves, a TGA from Morrowind saves.
+  dump        Print records as readable values, or their byte layout with --raw.
+  help        Print this message, or one command's options.
+
+Options, anywhere on the line:
+      --format <FORMAT>      Output format: YAML (the default), compact one-line JSON, or TOML.
+                             Raw byte-layout dumps default to JSON. [yaml, json, toml]
+      --game <GAME>          Which game wrote the save. By default it's detected: OpenMW saves have
+                             a SAVE record, Morrowind saves (.ess) game data in their header. Check
+                             and strip take OpenMW saves only. [auto, openmw, morrowind]
+      --encoding <ENCODING>  The code page the save's text is in: win1252 for English and Western
+                             European releases, win1251 for Russian, win1250 for Central European.
+                             By default, win1252. [win1250, win1251, win1252]
+  -h, --help                 Print help
+  -V, --version              Print version]]
+
+local Topics: { [string]: string } = {
+  info = [[
+tes3-saves info <INPUT>
+
+The save's character, place, time, and the content files it needs.
+
+  <INPUT>  The save: an OpenMW .omwsave or a Morrowind .ess.]],
+
+  check = [[
+tes3-saves check [--config <PATH>] <INPUT>
+
+Check whether a save is sound: damage, and what it needs that the save alone can show. Exits 1
+when it can't load.
+
+  <INPUT>          The save to check.
+  --config <PATH>  An openmw.cfg or its folder: the load order to check the save against, for
+                   the content it needs that isn't active and the records it names that are
+                   gone. Without it, the configuration OPENMW_CONFIG names; with neither, only
+                   the save itself is checked. (jess save check read no configuration.)
+
+Which check: tes3cmd lint asks whether a plugin's content is sensible, tes3cmd validate whether
+its format loads in Morrowind.exe or OpenMW, and tes3-saves check whether a save is sound.]],
+
+  strip = [[
+tes3-saves strip [--dry-run] [--output <OUTPUT>] [--no-backup] [--sample-limit <N>]
+                 [--config <PATH>] <INPUT> <DEPENDENCY>...
+
+Remove content files from a save, fixing or refusing state that depends on them. A strip that is
+blocked writes nothing, prints its plan, and exits 1; with --dry-run it exits 0.
+
+  <INPUT>             The save to strip.
+  <DEPENDENCY>...     Content files to remove, by name as the save lists them. Any order:
+                      dependents are stripped before their masters.
+  --dry-run           Show what would change without writing anything.
+  --output <OUTPUT>   Write the stripped save here instead of over the input.
+  --no-backup         Don't back up the save (or a file already at --output) before writing over
+                      it.
+  --sample-limit <N>  How many example record ids each part of the plan lists. [default: 5]
+  --config <PATH>     An openmw.cfg or its folder: where the content files are found, which is
+                      how a strip knows the records that came from the ones it removes. Without
+                      it, the configuration OPENMW_CONFIG names; with neither, a save that refers
+                      to anything a removed file might have defined is blocked. (jess save strip
+                      read no configuration.)]],
+
+  screenshot = [[
+tes3-saves screenshot [-o, --output <OUTPUT>] [--no-backup] <INPUT> [OUTPUT]
+
+Extract the save's screenshot: a JPEG from OpenMW saves, a TGA from Morrowind saves.
+
+  <INPUT>                The save file.
+  -o, --output <OUTPUT>  Where to write the image. Without it, next to the save with a .jpg or
+                         .tga extension. The output can follow the input instead.
+  --no-backup            Don't back up a file already at the output before replacing it.]],
+
+  dump = [=[
+tes3-saves dump [SELECTORS] [--list] [--raw] [--raw-output <PATH> [--header] [--no-backup]]
+                <INPUT>
+
+Print records as readable values, or their byte layout with --raw.
+
+  <INPUT>              The file to dump: its path.
+  --list               Only list the matching records' number, type, and id.
+  --raw                Print each record's byte layout (tags, sizes, byte ranges, decoded
+                       fields) instead of its values. JSON unless --format says otherwise.
+  --raw-output <PATH>  Write the matching records, byte for byte, to a new plugin file instead
+                       of dumping them.
+  --header             With --raw-output, start the file with the input's TES3 header, so it
+                       loads as a plugin.
+  --no-backup          With --raw-output, don't back up a file already at that path before
+                       replacing it.
+
+Selectors:
+  -t, --type <TYPE>    Only match record types. Can be repeated.
+  --flag <FLAG>        Only match records with any of these flags. Names: deleted, persistent,
+                       ignored, blocked.
+  --id <ID>            Only match records whose ID matches this case-insensitive regex. Can be
+                       repeated.
+  --exact-id <ID>      Only match records whose ID exactly matches this string. Can be repeated.
+  --match <REGEX>      Only match records whose raw bytes match this case-insensitive regex. Can
+                       be repeated.
+  --no-match <REGEX>   Skip records whose raw bytes match this case-insensitive regex. Can be
+                       repeated.
+  --sub-match <REGEX>  Only match subrecords whose rendered raw text matches this regex.
+  --sub-no-match <REGEX>
+                       Skip subrecords whose rendered raw text matches this regex.
+  --instance-match <REGEX>
+                       Only match CELL reference groups whose rendered raw text matches this
+                       regex.
+  --instance-no-match <REGEX>
+                       Skip CELL reference groups whose rendered raw text matches this regex.
+  --interior           Only match interior CELL records.
+  --exterior           Only match exterior CELL records.
+
+Subrecord and reference filters narrow a byte layout and an extraction; the readable dump shows
+each matching record whole.]=],
+}
+
+local Statuses = [[
+Exit status: 0 done; 1 check found a save that can't load, or strip was blocked and wrote
+nothing; 8 the command line can't be used; 9 the command failed.]]
+
+local CommandOrder = { 'info', 'check', 'strip', 'screenshot', 'dump' }
+
+--- Commands the jess binary had beside `save`, which aren't this package's to offer.
+local Elsewhere: { [string]: string } = {
+  completions = 'shell completion scripts were the jess binary\'s to generate (jess completions), and this package generates none',
+  man = 'man pages were the jess binary\'s to generate (jess man), and this package generates none',
+}
+
+--- The whole help, or one command's.
+local function usage(topic: string?): string
+  local text = topic and Topics[topic]
+  if text then return `{text}\n\n{Statuses}` end
+
+  local parts = { Summary }
+  for _, name in CommandOrder do
+    table.insert(parts, Topics[name])
+  end
+
+  table.insert(parts, Statuses)
+  return table.concat(parts, '\n\n')
+end
+
+--[[ Options ]]
+
+--- An option: its long name, its short one, what its value is called when it takes one (a switch
+--- takes none), and whether it may be given more than once.
+type Option = { long: string, short: string?, value: string?, many: boolean? }
+
+local Global: { Option } = {
+  { long = 'format', value = 'a format: yaml, json, or toml' },
+  { long = 'game', value = 'a game: auto, openmw, or morrowind' },
+  { long = 'encoding', value = 'a code page: win1250, win1251, or win1252' },
+  { long = 'help', short = 'h' },
+  { long = 'version', short = 'V' },
+}
+
+local Config: Option = { long = 'config', value = 'an openmw.cfg or its folder' }
+
+local Own: { [string]: { Option } } = {
+  info = {},
+  check = { Config },
+  strip = {
+    { long = 'dry-run' },
+    { long = 'output', value = 'a path' },
+    { long = 'no-backup' },
+    { long = 'sample-limit', value = 'a number' },
+    Config,
+  },
+  screenshot = {
+    { long = 'output', short = 'o', value = 'a path' },
+    { long = 'no-backup' },
+  },
+  dump = {
+    { long = 'type', short = 't', value = 'a record type', many = true },
+    { long = 'flag', value = 'a record flag', many = true },
+    { long = 'id', value = 'a regex', many = true },
+    { long = 'exact-id', value = 'an id', many = true },
+    { long = 'match', value = 'a regex', many = true },
+    { long = 'no-match', value = 'a regex', many = true },
+    { long = 'sub-match', value = 'a regex' },
+    { long = 'sub-no-match', value = 'a regex' },
+    { long = 'instance-match', value = 'a regex' },
+    { long = 'instance-no-match', value = 'a regex' },
+    { long = 'interior' },
+    { long = 'exterior' },
+    { long = 'list' },
+    { long = 'raw' },
+    { long = 'raw-output', value = 'a path' },
+    { long = 'header' },
+    { long = 'no-backup' },
+  },
+  help = {},
+}
+
+local function find(options: { Option }, name: string, short: boolean): Option?
+  for _, option in options do
+    if (if short then option.short else option.long) == name then return option end
+  end
+
+  return nil
+end
+
+--- The command `name` is an option of, when it is one command's and not every command's.
+local function owner(name: string, short: boolean): string?
+  for _, command in CommandOrder do
+    if find(Own[command], name, short) then return command end
+  end
+
+  return nil
+end
+
+--- What an argument list gave: the command, the arguments that aren't options, and each
+--- option's values in the order they came (`true` for a switch).
+type Given = { command: string?, arguments: { string }, values: { [string]: { string | boolean } } }
+
+local function scan(argv: { string }): (Given?, string?)
+  local given: Given = { arguments = {}, values = {} }
+  local literal = false
+  local index = 1
+  while index <= #argv do
+    local argument = argv[index]
+    index += 1
+    if literal or argument == '-' or string.sub(argument, 1, 1) ~= '-' then
+      if not given.command then
+        if Elsewhere[argument] then
+          return nil, `'{argument}' isn't a tes3-saves command: {Elsewhere[argument]}`
+        end
+
+        if not Own[argument] then return nil, `unknown command '{argument}'` end
+
+        given.command = argument
+      else
+        table.insert(given.arguments, argument)
+      end
+
+      continue
+    end
+
+    if argument == '--' then
+      literal = true
+      continue
+    end
+
+    local short = string.sub(argument, 1, 2) ~= '--'
+    local name: string, attached: string?
+    if short then
+      name = string.sub(argument, 2, 2)
+      local rest = string.sub(argument, 3)
+      if rest ~= '' then attached = if string.sub(rest, 1, 1) == '=' then string.sub(rest, 2) else rest end
+    else
+      local long, value = string.match(argument, '^%-%-([^=]+)=(.*)$')
+      name, attached = long or string.sub(argument, 3), value
+    end
+
+    local spelled = if short then `-{name}` else `--{name}`
+    local option = find(Global, name, short)
+    if not option and given.command then option = find(Own[given.command], name, short) end
+
+    if not option then
+      local command = owner(name, short)
+      if command and not given.command then
+        return nil, `{spelled} is an option of {command}, and goes after it`
+      end
+
+      if command then return nil, `{spelled} isn't an option of {given.command}` end
+
+      return nil, `unknown option '{argument}'`
+    end
+
+    local value: string | boolean = true
+    if option.value then
+      local taken = attached
+      if not taken then
+        local following = argv[index]
+        -- As clap reads it: an argument that starts with a dash is the next option, not this
+        -- one's value, which then has to be attached with `=`.
+        if following and (following == '-' or string.sub(following, 1, 1) ~= '-') then
+          taken = following
+          index += 1
+        end
+      end
+
+      if not taken or taken == '' then return nil, `{spelled} requires {option.value}` end
+
+      value = taken
+    elseif attached then
+      return nil, `{spelled} takes no value, not '{attached}'`
+    end
+
+    local values = given.values[option.long]
+    if not values then
+      given.values[option.long] = { value }
+    elseif option.many then
+      table.insert(values, value)
+    else
+      return nil, `--{option.long} can't be given more than once`
+    end
+  end
+
+  return given, nil
+end
+
+--- The one value of a single-valued option, or nil.
+local function text(given: Given, name: string): string?
+  local values = given.values[name]
+  local value = values and values[1]
+  return if type(value) == 'string' then value else nil
+end
+
+local function switch(given: Given, name: string): boolean return given.values[name] ~= nil end
+
+--- Every value of an option that may repeat, or nil without any.
+local function texts(given: Given, name: string): { string }?
+  local values = given.values[name]
+  if not values then return nil end
+
+  local out: { string } = {}
+  for _, value in values do
+    if type(value) == 'string' then table.insert(out, value) end
+  end
+
+  return out
+end
+
+local Formats: { [string]: Format } = { yaml = 'yaml', json = 'json', toml = 'toml' }
+local Games: { [string]: Commands.Game } = { openmw = 'openmw', morrowind = 'morrowind' }
+
+local Encodings: { [string]: Commands.Encoding } =
+  { win1250 = 'win1250', win1251 = 'win1251', win1252 = 'win1252' }
+
+--[[ parse ]]
+
+--- The request `argv` spells, without running it or touching a file, or what can't be read of
+--- it.
+local function parse(argv: { string }): (Request?, string?)
+  local given, problem = scan(argv)
+  if not given then return nil, problem end
+
+  local command = given.command
+  if switch(given, 'help') then
+    return { command = 'help' :: 'help', topic = if command ~= 'help' then command else nil }, nil
+  end
+
+  if switch(given, 'version') then return { command = 'version' :: 'version' }, nil end
+
+  if not command then
+    return nil, 'a command is required: info, check, strip, screenshot, or dump'
+  end
+
+  local arguments = given.arguments
+  if command == 'help' then
+    local topic = arguments[1]
+    if #arguments > 1 then return nil, `unexpected argument '{arguments[2]}'` end
+
+    if topic and Elsewhere[topic] then
+      return nil, `'{topic}' isn't a tes3-saves command: {Elsewhere[topic]}`
+    end
+
+    if topic and not Topics[topic] and topic ~= 'help' then
+      return nil, `unknown command '{topic}'`
+    end
+
+    return { command = 'help' :: 'help', topic = if topic ~= 'help' then topic else nil }, nil
+  end
+
+  local format: Format? = nil
+  local formatName = text(given, 'format')
+  if formatName then
+    format = Formats[formatName]
+    if not format then return nil, `--format takes yaml, json, or toml, not '{formatName}'` end
+  end
+
+  local game: Commands.Game? = nil
+  local gameName = text(given, 'game')
+  if gameName and gameName ~= 'auto' then
+    game = Games[gameName]
+    if not game then return nil, `--game takes auto, openmw, or morrowind, not '{gameName}'` end
+  end
+
+  local encoding: Commands.Encoding? = nil
+  local encodingName = text(given, 'encoding')
+  if encodingName then
+    encoding = Encodings[encodingName]
+    if not encoding then
+      return nil, `--encoding takes win1250, win1251, or win1252, not '{encodingName}'`
+    end
+  end
+
+  local path = arguments[1]
+  if not path then return nil, `{command} requires the save's path` end
+
+  if command == 'info' or command == 'check' or command == 'dump' then
+    if #arguments > 1 then return nil, `unexpected argument '{arguments[2]}'` end
+  end
+
+  if command == 'info' then
+    local request: Commands.InfoRequest = { path = path, game = game, encoding = encoding }
+    return { command = 'info' :: 'info', format = format, request = request }, nil
+  end
+
+  if command == 'check' then
+    local request: Commands.CheckRequest =
+      { path = path, game = game, encoding = encoding, config = text(given, 'config') }
+    return { command = 'check' :: 'check', format = format, request = request }, nil
+  end
+
+  if command == 'strip' then
+    local dependencies = table.move(arguments, 2, #arguments, 1, {})
+    if #dependencies == 0 then return nil, 'strip requires a content file to remove' end
+
+    local dryRun = switch(given, 'dry-run')
+    if dryRun and text(given, 'output') then return nil, '--output can\'t be used with --dry-run' end
+
+    if dryRun and switch(given, 'no-backup') then
+      return nil, '--no-backup can\'t be used with --dry-run'
+    end
+
+    local sampleLimit: number? = nil
+    local limit = text(given, 'sample-limit')
+    if limit then
+      sampleLimit = if string.find(limit, '^%d+$') then tonumber(limit) else nil
+      if not sampleLimit then return nil, `--sample-limit takes a whole number, not '{limit}'` end
+    end
+
+    local request: Commands.StripRequest = {
+      path = path,
+      game = game,
+      encoding = encoding,
+      dependencies = dependencies,
+      config = text(given, 'config'),
+      output = text(given, 'output'),
+      backup = if switch(given, 'no-backup') then false else nil,
+      dryRun = if dryRun then true else nil,
+      sampleLimit = sampleLimit,
+    }
+
+    return { command = 'strip' :: 'strip', format = format, request = request }, nil
+  end
+
+  if command == 'screenshot' then
+    if #arguments > 2 then return nil, `unexpected argument '{arguments[3]}'` end
+
+    local output = text(given, 'output')
+    if output and arguments[2] then
+      return nil, `the output is given twice: --output '{output}' and '{arguments[2]}'`
+    end
+
+    local request: Commands.ScreenshotRequest = {
+      path = path,
+      game = game,
+      encoding = encoding,
+      output = output or arguments[2],
+      backup = if switch(given, 'no-backup') then false else nil,
+    }
+
+    return { command = 'screenshot' :: 'screenshot', format = format, request = request }, nil
+  end
+
+  local rawOutput = text(given, 'raw-output')
+  if switch(given, 'header') and not rawOutput then return nil, '--header requires --raw-output' end
+
+  if switch(given, 'no-backup') and not rawOutput then
+    return nil, '--no-backup requires --raw-output'
+  end
+
+  local selectors: Commands.SelectorSpec = {
+    type = texts(given, 'type'),
+    flags = texts(given, 'flag'),
+    id = texts(given, 'id'),
+    exactId = texts(given, 'exact-id'),
+    match = texts(given, 'match'),
+    notMatch = texts(given, 'no-match'),
+    sub = text(given, 'sub-match'),
+    notSub = text(given, 'sub-no-match'),
+    instance = text(given, 'instance-match'),
+    notInstance = text(given, 'instance-no-match'),
+    interior = if switch(given, 'interior') then true else nil,
+    exterior = if switch(given, 'exterior') then true else nil,
+  }
+
+  local request: Commands.DumpRequest = {
+    path = path,
+    game = game,
+    encoding = encoding,
+    selectors = if next(selectors) then selectors else nil,
+    list = if switch(given, 'list') then true else nil,
+    raw = if switch(given, 'raw') then true else nil,
+    rawOutput = rawOutput,
+    header = if switch(given, 'header') then true else nil,
+    backup = if switch(given, 'no-backup') then false else nil,
+  }
+
+  return { command = 'dump' :: 'dump', format = format, request = request }, nil
+end
+
+--[[ status ]]
+
+--- What `jess save` said on standard error when it exited 1 for what a command found; nil for a
+--- result it exited 0 for.
+local function found(result: Commands.Result): string?
+  if result.command == 'check' and not result.check.loads then
+    return 'the save can\'t be loaded as it is'
+  end
+
+  if result.command == 'strip' and result.blocked and not result.dryRun then
+    return 'nothing was written'
+  end
+
+  return nil
+end
+
+--- The exit status `jess save` gave for `result`: 1 for a check of a save that can't load and for
+--- a strip that was blocked outside a dry run, 0 for everything else.
+local function status(result: Commands.Result): number
+  return if found(result) then Exit.found else Exit.ok
+end
+
+--[[ run ]]
+
+local function out(text: string) process.write('stdout', text) end
+
+local function err(message: string) process.write('stderr', `tes3-saves: {message}\n`) end
+
+--- The configuration `OPENMW_CONFIG` names, or nil.
+local function environment(): string?
+  -- `process.env` throws in a runtime without the process.environment capability. A caller there
+  -- can only name the configuration with --config, so the variable counts as unset.
+  local readable, value = pcall(process.env, 'OPENMW_CONFIG')
+  if readable and value ~= '' then return value end
+
+  return nil
+end
+
+--- What a raised error says, without the script position Luau puts in front of one raised
+--- where it happened.
+local function reason(problem: unknown): string
+  local message = tostring(problem)
+  return string.match(message, '^[^\n]-%.luau:%d+: (.*)$') or message
+end
+
+--- The command `request` names, carried out.
+local function execute(request: Request): Commands.Result?
+  if request.command == 'info' then return Commands.info(request.request) end
+
+  if request.command == 'check' then
+    local check = table.clone(request.request)
+    check.config = check.config or environment()
+    return Commands.check(check)
+  end
+
+  if request.command == 'strip' then
+    local strip = table.clone(request.request)
+    strip.config = strip.config or environment()
+    return Commands.strip(strip)
+  end
+
+  if request.command == 'screenshot' then return Commands.screenshot(request.request) end
+
+  if request.command == 'dump' then return Commands.dump(request.request) end
+
+  return nil
+end
+
+local function run(argv: { string }): number
+  local request, problem = parse(argv)
+  if not request then
+    err(problem :: string)
+    return Exit.invalidInput
+  end
+
+  if request.command == 'help' then
+    out(usage(request.topic) .. '\n')
+    return Exit.ok
+  end
+
+  if request.command == 'version' then
+    out(`tes3-saves {Version}\n`)
+    return Exit.ok
+  end
+
+  -- A command raises for a request it can't carry out at all: a file that isn't there or isn't a
+  -- save, a configuration that can't be loaded, a pattern that isn't a regex, a file that can't
+  -- be written.
+  local done, result = pcall(execute, request)
+  if not done or not result then
+    err(reason(result))
+    return Exit.runtime
+  end
+
+  -- TOML has no null and no list of mixed kinds; the serializer raises for a document it can't
+  -- hold, as the toml crate did.
+  local shown, document = pcall(Render.render, result :: Commands.Result, { format = request.format })
+  if not shown then
+    err(`failed to write output: {reason(document)}`)
+    return Exit.runtime
+  end
+
+  out(document)
+  local message = found(result :: Commands.Result)
+  if message then err(message) end
+
+  return status(result :: Commands.Result)
+end
+
+return table.freeze {
+  Exit = Exit,
+  Version = Version,
+  parse = parse,
+  render = Render.render,
+  run = run,
+  status = status,
+  usage = usage,
+}

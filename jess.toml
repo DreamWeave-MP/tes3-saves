@@ -4,19 +4,24 @@ manifest_version = 1
 id = "org.dreamweave.tes3-saves"
 version = "0.1.0"
 jess_api = "1"
+default_target = "tes3-saves"
 include = ["src"]
-tests = ["tests/run.luau", "tests/tree.luau", "tests/commands.luau", "tests/style.luau"]
+tests = ["tests/run.luau", "tests/tree.luau", "tests/commands.luau", "tests/cli.luau", "tests/style.luau"]
 
 # tes3 is what a save is made of. openmw is here for the commands alone: `check` and `strip` are
 # given a configuration by its path and need the load order it describes; @tes3-saves itself
-# still takes a load order as a value and names an OpenMW Context only by its shape.
+# still takes a load order as a value and names an OpenMW Context only by its shape. vfs is here
+# for one module, @vfs/serialize: the command line prints its reports as YAML, JSON, and TOML the
+# way serde wrote them, and that is the serializer that does.
 [dependencies]
 "org.dreamweave.tes3" = "0.1"
 "org.dreamweave.openmw" = "0.1"
+"org.dreamweave.vfs" = "0.1"
 
 [modules]
 "@tes3-saves" = "src/init.luau"
 "@tes3-saves/commands" = "src/commands.luau"
+"@tes3-saves/cli" = "src/cli.luau"
 
 # Every module here is inert API: it does nothing until something requires it, and runs with the
 # authority of whatever calls it. @tes3-saves works on saves in memory, and reads a load order's
@@ -25,8 +30,23 @@ tests = ["tests/run.luau", "tests/tree.luau", "tests/commands.luau", "tests/styl
 # `strip` with a configuration, the configuration chain and the content files it finds, and it
 # writes a stripped save, a screenshot, or extracted records with the backup of what they
 # replace, so its caller needs filesystem.read and, for a command that writes, filesystem.write.
+# @tes3-saves/cli is the command line over it.
 
 [[layer]]
 id = "tes3-saves.core"
-requires = ["tes3.core", "openmw.core"]
-exports = ["@tes3-saves", "@tes3-saves/commands"]
+requires = ["tes3.core", "openmw.core", "vfs.core"]
+exports = ["@tes3-saves", "@tes3-saves/commands", "@tes3-saves/cli"]
+
+# The command line: `src/main.luau` hands its arguments to `@tes3-saves/cli`. A command reads the
+# save it is given and, for `check` and `strip` against a load order, the configuration chain, its
+# data folders' listings, and the content files (filesystem.read); `strip` writes the stripped
+# save, `screenshot` the image, and `dump --raw-output` the extracted records, each after the
+# backup of a file it replaces (filesystem.write); and `check` and `strip` read OPENMW_CONFIG
+# when --config doesn't name the configuration (process.environment). It runs no other program
+# and opens no connection.
+
+[targets.tes3-saves]
+kind = "command"
+command = "tes3-saves"
+entry = "src/main.luau"
+capabilities = ["filesystem.read", "filesystem.write", "process.environment"]
