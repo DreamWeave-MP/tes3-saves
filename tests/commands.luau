@@ -431,4 +431,131 @@ suite.describe('dump', function()
   end)
 end)
 
+suite.describe('strip', function()
+  --- The first step of a strip's plan, and one of its parts by name.
+  local function part(result: commands.StripResult, name: string): { [string]: any }
+    local steps = result.report.steps :: { { [string]: any } }
+    return steps[1][name]
+  end
+
+  suite.it('plans and verifies on a dry run, and writes nothing', function()
+    local laid = disk.install('typed-refids', 'commands-strip-dry')
+    local result = commands.strip {
+      path = laid.save,
+      config = laid.config,
+      dependencies = { 'Tribunal.esm' },
+      dryRun = true,
+    }
+
+    expect(result.command).toBe 'strip'
+    expect(result.path).toBe(laid.save)
+    expect(result.config).toBe(laid.config)
+    expect(result.dryRun).toBe(true)
+    expect(result.blocked).toBe(false)
+    expect(result.written).toBeNil()
+    expect(result.report.input).toBe(laid.save)
+    expect(result.report.dependencies).toEqual { 'Tribunal.esm' }
+    expect(part(result, 'mode')).toBe 'dryRun'
+    expect(part(result, 'dryRun').status).toBe 'verified'
+    expect(part(result, 'mutation')).toBe 'dryRunOnly'
+    expect(#part(result, 'plannedEdits')).toBe(4)
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+
+    -- A dry run of a strip to an output is still a dry run.
+    local output = jess.fs.join(laid.root, 'Vanilla.omwsave')
+    local preview = commands.strip {
+      path = laid.save,
+      config = laid.config,
+      dependencies = { 'Tribunal.esm' },
+      output = output,
+      dryRun = true,
+    }
+
+    expect(preview.written).toBeNil()
+    expect(part(preview, 'mode')).toBe 'dryRun'
+    expect(jess.fs.exists(output)).toBe(false)
+  end)
+
+  suite.it('writes over the save after a backup, or where it is told', function()
+    local laid = disk.install('typed-refids', 'commands-strip-write')
+    local output = jess.fs.join(laid.root, 'Vanilla.omwsave')
+    local request: commands.StripRequest =
+      { path = laid.save, config = laid.config, dependencies = { 'Tribunal.esm' }, output = output }
+    local elsewhere = commands.strip(request)
+    expect(elsewhere.blocked).toBe(false)
+    expect(elsewhere.written).toEqual { path = output }
+    expect(part(elsewhere, 'mode')).toBe 'output'
+    expect(part(elsewhere, 'mutation')).toBe 'written'
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+    expect(saves.info(saves.open(output)).dependencies).toEqual { 'Morrowind.esm' }
+
+    -- A file already at the output is backed up, unless told not to.
+    expect(commands.strip(request).written).toEqual { path = output, backup = output .. '.bak' }
+    request.backup = false
+    expect(commands.strip(request).written).toEqual { path = output }
+    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+
+    request.output = nil
+    request.backup = nil
+    local inPlace = commands.strip(request)
+    expect(inPlace.written).toEqual { path = laid.save, backup = laid.save .. '.bak' }
+    expect(part(inPlace, 'mode')).toBe 'inPlace'
+    expect(disk.read(laid.save .. '.bak') == laid.bytes).toBe(true)
+    expect(disk.read(laid.save) == disk.read(output)).toBe(true)
+  end)
+
+  suite.it('reports a removal it refuses as blocked, with why, and leaves the save alone', function()
+    local laid = disk.install('player-record', 'commands-strip-blocked')
+    -- Stripping the plugin that added the player's race can't fix the player, so it's refused.
+    for _, dryRun in { true, false } do
+      local result = commands.strip {
+        path = laid.save,
+        config = laid.config,
+        dependencies = { 'Races.esp' },
+        dryRun = dryRun,
+      }
+
+      expect(result.blocked).toBe(true)
+      expect(result.written).toBeNil()
+      expect(part(result, 'mutationReadiness').canAttemptDryRun).toBe(false)
+      local blocked = false
+      for _, concern in part(result, 'blockers').hard do
+        if concern.kind == 'targetIntroducedRefIds' and concern.count == 2 then blocked = true end
+      end
+
+      expect(blocked).toBe(true)
+    end
+
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+    expect(jess.fs.exists(laid.save .. '.bak')).toBe(false)
+  end)
+
+  suite.it('can\'t tell a removed file\'s records apart without a configuration', function()
+    local laid = disk.install('uninstalled-blocked', 'commands-strip-no-config')
+    local result = commands.strip { path = laid.save, dependencies = { 'Tribunal.esm' }, dryRun = true }
+    expect(result.config).toBeNil()
+    expect(result.blocked).toBe(true)
+    expect(part(result, 'targetResolution')).toEqual { status = 'disabled' }
+    expect(part(result, 'blockers').hard[1].kind).toBe 'targetRefIdsWithIncompletePriorProvenance'
+  end)
+
+  suite.it('refuses what it can\'t be asked: another game\'s save, an unknown file, its own input', function()
+    local laid = disk.install('plain', 'commands-strip-refused')
+    expect(
+      function() commands.strip { path = laid.save, dependencies = { 'Nope.esp' }, dryRun = true } end
+    ).toThrow 'save dependency \'Nope.esp\' was not found'
+    expect(
+      function()
+        commands.strip { path = laid.save, dependencies = { 'Morrowind.esm' }, output = laid.save }
+      end
+    ).toThrow 'save strip --output must differ from the input'
+
+    local quicksave = disk.write(jess.fs.join(laid.root, 'Quicksave.ess'), fixtures.morrowindSave())
+    expect(
+      function() commands.strip { path = quicksave, dependencies = { 'Morrowind.esm' } } end
+    ).toThrow 'save strip isn\'t supported for Morrowind saves'
+    expect(disk.read(laid.save) == laid.bytes).toBe(true)
+  end)
+end)
+
 return suite
