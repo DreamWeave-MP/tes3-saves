@@ -81,7 +81,7 @@ Commands:
   strip       Remove content files from a save, fixing or refusing state that depends on them.
   screenshot  Extract the save's screenshot: a JPEG from OpenMW saves, a TGA from Morrowind saves.
   dump        Print records as readable values, or their byte layout with --raw.
-  help        Print this message, or one command's options.
+  help        Print this message, or with a command's name, that command's options.
 
 Options, anywhere on the line:
       --format <FORMAT>      Output format: YAML (the default), compact one-line JSON, or TOML.
@@ -204,18 +204,10 @@ local Elsewhere: { [string]: string } = {
   man = 'man pages were the jess binary\'s to generate (jess man), and this package generates none',
 }
 
---- The whole help, or one command's.
+--- The help: the commands and the options that go anywhere, or one command's own.
 local function usage(topic: string?): string
   local text = topic and Topics[topic]
-  if text then return `{text}\n\n{Statuses}` end
-
-  local parts = { Summary }
-  for _, name in CommandOrder do
-    table.insert(parts, Topics[name])
-  end
-
-  table.insert(parts, Statuses)
-  return table.concat(parts, '\n\n')
+  return `{text or Summary}\n\n{Statuses}`
 end
 
 --[[ Options ]]

@@ -1094,16 +1094,33 @@ suite.describe('run', function()
     expect(cli.run { '--version' }).toBe(0)
   end)
 
-  suite.it('gives each command\'s help its own options, and the whole help all of them', function()
+  suite.it('lists the commands in its help, and each command\'s options in that command\'s', function()
+    -- What jess's CLI tests asked of `jess save --help`: these commands, and no plugin command.
+    local help = cli.usage()
+    for _, command in { 'info', 'check', 'strip', 'screenshot', 'dump' } do
+      expect(help).toContain(`\n  {command} `)
+    end
+
+    for _, other in { 'clone', 'validate', 'stats' } do
+      expect(string.find(help, other, 1, true)).toBeNil()
+    end
+
+    for _, option in { '--format <FORMAT>', '--game <GAME>', '--encoding <ENCODING>', '-h, --help', '-V, --version' } do
+      expect(help).toContain(option)
+    end
+
+    expect(help).toContain 'Exit status: 0 done; 1 check found a save that can\'t load'
+
     local strip = cli.usage 'strip'
     expect(strip).toContain 'tes3-saves strip [--dry-run] [--output <OUTPUT>] [--no-backup] [--sample-limit <N>]'
     expect(strip).toContain '--sample-limit <N>  How many example record ids each part of the plan lists. [default: 5]'
     expect(strip).toContain 'Exit status: 0 done; 1 check found a save that can\'t load'
     expect(string.find(strip, '--raw-output', 1, true)).toBeNil()
-    local whole = cli.usage()
-    for _, option in { '--format', '--game', '--encoding', '--config', '--dry-run', '--raw-output', '--instance-no-match', '-o, --output', '-t, --type' } do
-      expect(whole).toContain(option)
-    end
+    expect(cli.usage 'check').toContain '--config <PATH>  An openmw.cfg or its folder'
+    expect(cli.usage 'screenshot').toContain '-o, --output <OUTPUT>  Where to write the image.'
+    expect(cli.usage 'dump').toContain '-t, --type <TYPE>    Only match record types. Can be repeated.'
+    expect(cli.usage 'dump').toContain '--instance-no-match <REGEX>'
+    expect(cli.usage 'info').toContain '<INPUT>  The save: an OpenMW .omwsave or a Morrowind .ess.'
   end)
 
   suite.it('returns 8 for every command line parse refuses', function()
