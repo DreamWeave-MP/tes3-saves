@@ -55,29 +55,29 @@ end
 --- Each CSTA object group's and moved reference's layout problems, at the subrecord it's about.
 local function cstaProblems(records: { Record }): { tes3.Diagnostic }
   local out = {}
-  for _, r in records do
-    if r.tag ~= 'CSTA' then continue end
+  for _, record in records do
+    if record.tag ~= 'CSTA' then continue end
 
-    for k = 0, #r.subs - 1 do
-      local tag = Records.tagAt(r, k)
-      local offset = r.subs[k + 1].start
+    for position = 0, #record.subs - 1 do
+      local tag = Records.tagAt(record, position)
+      local offset = record.subs[position + 1].start
       if tag == 'OBJE' then
-        if Records.tagAt(r, k + 1) ~= 'FRMR' then
-          table.insert(
-            out,
-            { offset = offset, message = `#{r.index} CSTA OBJE #{k} is not followed by FRMR` }
-          )
-        elseif Records.tagAt(r, k + 2) ~= 'NAME' then
+        if Records.tagAt(record, position + 1) ~= 'FRMR' then
           table.insert(out, {
             offset = offset,
-            message = `#{r.index} CSTA OBJE #{k} FRMR #{k + 1} is not followed by NAME`,
+            message = `#{record.index} CSTA OBJE #{position} is not followed by FRMR`,
+          })
+        elseif Records.tagAt(record, position + 2) ~= 'NAME' then
+          table.insert(out, {
+            offset = offset,
+            message = `#{record.index} CSTA OBJE #{position} FRMR #{position + 1} is not followed by NAME`,
           })
         end
-      elseif tag == 'MVRF' and Records.tagAt(r, k + 1) ~= 'NAME' then
-        table.insert(
-          out,
-          { offset = offset, message = `#{r.index} CSTA MVRF #{k} is not followed by NAME` }
-        )
+      elseif tag == 'MVRF' and Records.tagAt(record, position + 1) ~= 'NAME' then
+        table.insert(out, {
+          offset = offset,
+          message = `#{record.index} CSTA MVRF #{position} is not followed by NAME`,
+        })
       end
     end
   end
@@ -184,13 +184,13 @@ local function dynamicIds(
   encoding: string
 ): { [number]: boolean }
   local known: { [number]: boolean } = {}
-  for _, r in records do
-    if not DynamicTags[r.tag] then continue end
+  for _, record in records do
+    if not DynamicTags[record.tag] then continue end
 
-    local name = Records.first(r, 'NAME')
+    local name = Records.first(record, 'NAME')
     if not name then continue end
 
-    local id = Records.refId(Records.payload(r, name))
+    local id = Records.refId(Records.payload(record, name))
     if id then known[LoadOrder.token(ids, id, encoding, true) :: number] = true end
   end
 
@@ -242,7 +242,7 @@ export type Finding = {
 
 --- What the engine does when this field names a missing record: a severity and problem, or nil
 --- when it drops it harmlessly.
-local function assess(r: Record, k: number, meaning: string): (string?, string)
+local function assess(record: Record, position: number, meaning: string): (string?, string)
   if meaning == 'player_birthsign' then return 'will_not_load', 'missing_birthsign' end
 
   if meaning == 'player_race' then return 'will_not_load', 'missing_player_race' end
@@ -265,12 +265,12 @@ local function assess(r: Record, k: number, meaning: string): (string?, string)
 
   if meaning == 'cell_ref_owner_faction' then return 'broken', 'owned_by_missing_faction' end
 
-  if meaning == 'cell_ref_key' and not Scan.isPickableLockBefore(r, k) then
+  if meaning == 'cell_ref_key' and not Scan.isPickableLockBefore(record, position) then
     return 'broken', 'key_only_lock_key_missing'
   end
 
   if meaning == 'ai_target_ref_id' or meaning == 'ai_package_cell' then
-    local package = Scan.aiPackageTypeBefore(r, k)
+    local package = Scan.aiPackageTypeBefore(record, position)
     if package == 'FOLL' or package == 'ESCO' then
       return 'broken', 'npc_follows_or_escorts_missing_target'
     end
@@ -278,8 +278,8 @@ local function assess(r: Record, k: number, meaning: string): (string?, string)
 
   -- In PLAY, the NAME after FRMR is the player's base record and the NAME after MARK the Mark cell
   -- (dropped); the remaining one is the player's current cell.
-  if meaning == 'player_ref_id' and r.tag == 'PLAY' then
-    local previous = Records.tagAt(r, k - 1)
+  if meaning == 'player_ref_id' and record.tag == 'PLAY' then
+    local previous = Records.tagAt(record, position - 1)
     if previous ~= 'FRMR' and previous ~= 'MARK' then return 'warning', 'player_cell_missing' end
   end
 
@@ -300,17 +300,17 @@ local function scanReferences(
     local token = LoadOrder.token(ids, field.id, encoding)
     if token and known[token] then continue end
 
-    local r, k = field.record, field.subrecord
-    local severity, problem = assess(r, k, field.meaning)
+    local record, position = field.record, field.subrecord
+    local severity, problem = assess(record, position, field.meaning)
     if severity then
       table.insert(findings, {
         severity = camelCase(severity),
         problem = camelCase(problem),
         id = field.id,
-        recordIndex = r.index,
-        recordType = r.tag,
-        subrecordIndex = k,
-        subrecordType = Records.tagAt(r, k) :: string,
+        recordIndex = record.index,
+        recordType = record.tag,
+        subrecordIndex = position,
+        subrecordType = Records.tagAt(record, position) :: string,
       })
     else
       local key = camelCase(field.meaning)
@@ -344,8 +344,8 @@ local function sameRelativeOrder(dependencies: { string }, active: { LoadOrder.C
 
   if #activeOrder ~= #saveOrder then return false end
 
-  for i, name in activeOrder do
-    if saveOrder[i] ~= name then return false end
+  for index, name in activeOrder do
+    if saveOrder[index] ~= name then return false end
   end
 
   return true

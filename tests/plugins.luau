@@ -16,7 +16,9 @@ local function record(tag: string, payload: string, flags: number?): string
   return tag .. u32(#payload) .. u32(0) .. u32(flags or 0) .. payload
 end
 
-local function fixed(text: string, n: number): string return text .. string.rep('\0', n - #text) end
+local function fixed(text: string, length: number): string
+  return text .. string.rep('\0', length - #text)
+end
 
 local function hedr(count: number, fileType: number?): string
   return subrecord(

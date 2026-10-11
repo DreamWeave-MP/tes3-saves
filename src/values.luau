@@ -54,8 +54,8 @@ local function printable(data: string): string?
 
   if data == '' then return nil end
 
-  for i = 1, #data do
-    local byte = string.byte(data, i)
+  for index = 1, #data do
+    local byte = string.byte(data, index)
     if
       not ((byte >= 0x20 and byte < 0x7f) or byte >= 0xa0 or byte == 9 or byte == 10 or byte == 13)
     then
@@ -106,8 +106,8 @@ local function genericValue(data: string): unknown
 
   if #data <= 16 then
     local hex = {}
-    for i = 1, #data do
-      hex[i] = string.format('%02x', string.byte(data, i))
+    for index = 1, #data do
+      hex[index] = string.format('%02x', string.byte(data, index))
     end
 
     return `hex {table.concat(hex, ' ')}`
@@ -121,8 +121,8 @@ local function placement(data: string): unknown
   if #data ~= 24 then return nil end
 
   local values = {}
-  for i = 0, 5 do
-    values[i + 1] = Records.f32At(data, 1 + i * 4)
+  for index = 0, 5 do
+    values[index + 1] = Records.f32At(data, 1 + index * 4)
   end
 
   return {
@@ -139,8 +139,8 @@ local function equipment(data: string): unknown
   if #data - 4 ~= count * 8 then return nil end
 
   local out = {}
-  for i = 0, count - 1 do
-    local item, slot = Records.u32At(data, 5 + i * 8), Records.u32At(data, 9 + i * 8)
+  for index = 0, count - 1 do
+    local item, slot = Records.u32At(data, 5 + index * 8), Records.u32At(data, 9 + index * 8)
     table.insert(out, `item {item} in slot {slot}`)
   end
 
@@ -216,11 +216,11 @@ end
 
 --- A save record rewritten into the plugin layout the typed decoders read: typed RefIds become
 --- plain strings, and NPCO items and NPCS spells become fixed 32-byte names.
-local function pluginLayout(plugin: Plugin, index: number, r: Record): string?
+local function pluginLayout(plugin: Plugin, index: number, record: Record): string?
   local parts = {}
-  for k = 0, #r.subs - 1 do
-    local tag = Records.tagAt(r, k) :: string
-    local data = Records.payload(r, k)
+  for position = 0, #record.subs - 1 do
+    local tag = Records.tagAt(record, position) :: string
+    local data = Records.payload(record, position)
     if tag == 'NPCO' then
       if #data < 4 then return nil end
 
@@ -251,8 +251,8 @@ local function pluginLayout(plugin: Plugin, index: number, r: Record): string?
     .. payload
 end
 
-local function typedContentValue(plugin: Plugin, index: number, r: Record): unknown
-  local bytes = pluginLayout(plugin, index, r)
+local function typedContentValue(plugin: Plugin, index: number, record: Record): unknown
+  local bytes = pluginLayout(plugin, index, record)
   if not bytes then return nil end
 
   -- tes3.open throws on bytes that don't frame, and decode on a record that doesn't decode; either
@@ -269,34 +269,40 @@ local function typedContentValue(plugin: Plugin, index: number, r: Record): unkn
   return if ok then value else nil
 end
 
-local function isObjectState(r: Record): boolean return r.tag == 'CSTA' or r.tag == 'PLAY' end
+local function isObjectState(record: Record): boolean
+  return record.tag == 'CSTA' or record.tag == 'PLAY'
+end
 
 type Indexes = { contentFiles: { string }, luaScripts: { string } }
 
-local function subrecordsValue(r: Record, indexes: Indexes): unknown
+local function subrecordsValue(record: Record, indexes: Indexes): unknown
   local subrecords = {}
   local inventoryItemsRemaining = 0
-  for k = 0, #r.subs - 1 do
-    local tag = Records.tagAt(r, k) :: string
-    local data = Records.payload(r, k)
+  for position = 0, #record.subs - 1 do
+    local tag = Records.tagAt(record, position) :: string
+    local data = Records.payload(record, position)
     if tag == 'ICNT' then inventoryItemsRemaining = Records.inventoryCount(data) end
 
-    local meaning = Scan.refIdField(r, k, inventoryItemsRemaining)
+    local meaning = Scan.refIdField(record, position, inventoryItemsRemaining)
     if meaning == 'inventory_item_base_object' then
       inventoryItemsRemaining = math.max(inventoryItemsRemaining - 1, 0)
     end
 
     local value: unknown = nil
-    local s = r.subs[k + 1]
+    local subrecord = record.subs[position + 1]
     if tag == 'LUAD' then
-      value = tes3.display.luaPayload(r.source, s.payload, s.size, true)
+      value = tes3.display.luaPayload(record.source, subrecord.payload, subrecord.size, true)
     elseif tag == 'LUAS' and #data == 4 then
       local id = Records.i32At(data)
       local path = if id >= 0 then indexes.luaScripts[id + 1] else nil
       value = if path then `{id} ({path})` else tostring(id)
     end
 
-    if value == nil and isObjectState(r) and (tag == 'DATA' or tag == 'POS_' or tag == 'DODT') then
+    if
+      value == nil
+      and isObjectState(record)
+      and (tag == 'DATA' or tag == 'POS_' or tag == 'DODT')
+    then
       value = placement(data)
     end
 
@@ -305,7 +311,7 @@ local function subrecordsValue(r: Record, indexes: Indexes): unknown
     -- Dynamic records store inventory as a count plus a typed RefId.
     if value == nil and tag == 'NPCO' then value = inventoryEntry(data) end
 
-    if value == nil and Scan.formIdField(r, k) then
+    if value == nil and Scan.formIdField(record, position) then
       local localIndex, contentFile = Records.wideFormId(data)
       if localIndex then value = referenceValue(localIndex, contentFile, indexes.contentFiles) end
     end
@@ -317,7 +323,7 @@ local function subrecordsValue(r: Record, indexes: Indexes): unknown
     table.insert(subrecords, { [tag] = value })
   end
 
-  return { record = r.index, type = r.tag, subrecords = subrecords }
+  return { record = record.index, type = record.tag, subrecords = subrecords }
 end
 
 --- Every record's readable value, as `jess save dump` shows it: OpenMW saves give typed values for
@@ -342,13 +348,13 @@ local function values(save: Save): { unknown }
 
   local records = Records.all(plugin)
   if save.game == 'openmw' then
-    for _, r in records do
-      if r.tag ~= 'LUAM' then continue end
+    for _, record in records do
+      if record.tag ~= 'LUAM' then continue end
 
-      for k = 0, #r.subs - 1 do
-        if Records.tagAt(r, k) ~= 'LUAP' then continue end
+      for position = 0, #record.subs - 1 do
+        if Records.tagAt(record, position) ~= 'LUAP' then continue end
 
-        local data = Records.payload(r, k)
+        local data = Records.payload(record, position)
         if string.sub(data, -1) == '\0' then data = string.sub(data, 1, -2) end
 
         table.insert(indexes.luaScripts, tes3.lossyUtf8(data))
@@ -357,30 +363,30 @@ local function values(save: Save): { unknown }
   end
 
   local out = table.create(#records)
-  for i, r in records do
-    local index = i - 1
-    if r.tag == headerTag and ok then
+  for slot, record in records do
+    local index = slot - 1
+    if record.tag == headerTag and ok then
       local value = table.clone(header :: { [string]: unknown })
       value.record = index
       value.type = 'SaveHeader'
-      out[i] = value
+      out[slot] = value
       continue
     end
 
     if save.game == 'morrowind' then
-      out[i] = tes3.display.display(plugin, index)
+      out[slot] = tes3.display.display(plugin, index)
       continue
     end
 
-    if DynamicTags[r.tag] or r.tag == 'GLOB' then
-      local typed = typedContentValue(plugin, index, r)
+    if DynamicTags[record.tag] or record.tag == 'GLOB' then
+      local typed = typedContentValue(plugin, index, record)
       if typed then
-        out[i] = typed
+        out[slot] = typed
         continue
       end
     end
 
-    out[i] = subrecordsValue(r, indexes)
+    out[slot] = subrecordsValue(record, indexes)
   end
 
   return out

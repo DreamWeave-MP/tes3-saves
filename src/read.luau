@@ -35,16 +35,17 @@ export type Options = {
 local Articles: { [Game]: string } = { openmw = 'an OpenMW', morrowind = 'a Morrowind' }
 local Names: { [Game]: string } = { openmw = 'OpenMW', morrowind = 'Morrowind' }
 
-local SAVE, TES3, GMDT = tes3.tags.code 'SAVE', tes3.tags.code 'TES3', tes3.tags.code 'GMDT'
+local SaveTag, Tes3Tag, GmdtTag =
+  tes3.tags.code 'SAVE', tes3.tags.code 'TES3', tes3.tags.code 'GMDT'
 
 --- What kind of save `plugin` is, or nil: an OpenMW save has a SAVE record, a Morrowind save a
 --- GMDT subrecord in its header.
 local function detect(plugin: Plugin): Game?
-  for i = 0, plugin:count() - 1 do
-    if plugin:code(i) == SAVE then return 'openmw' end
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) == SaveTag then return 'openmw' end
   end
 
-  if plugin:count() > 0 and plugin:code(0) == TES3 and plugin:findSubrecord(0, GMDT) then
+  if plugin:count() > 0 and plugin:code(0) == Tes3Tag and plugin:findSubrecord(0, GmdtTag) then
     return 'morrowind'
   end
 
@@ -123,7 +124,7 @@ local GmdtLength = 124
 local function morrowindInfo(plugin: Plugin): Info
   local header = plugin:header()
   local masters = plugin:masters()
-  local source, at, size = plugin:findSubrecord(0, GMDT)
+  local source, at, size = plugin:findSubrecord(0, GmdtTag)
   local gmdt = if source and size >= GmdtLength then source else nil
   local function text(offset: number, length: number): string
     local raw = buffer.readstring(gmdt :: buffer, at + offset, length)
@@ -133,12 +134,13 @@ local function morrowindInfo(plugin: Plugin): Info
   local scrs, _, scrsSize = plugin:findSubrecord(0, tes3.tags.code 'SCRS')
   local screenshotBytes = if scrs then scrsSize else 0
 
-  local GLOB, NAME, FLTV = tes3.tags.code 'GLOB', tes3.tags.code 'NAME', tes3.tags.code 'FLTV'
+  local globTag, nameTag, fltvTag =
+    tes3.tags.code 'GLOB', tes3.tags.code 'NAME', tes3.tags.code 'FLTV'
   local function global(name: string): number?
-    for i = 0, plugin:count() - 1 do
-      if plugin:code(i) ~= GLOB then continue end
+    for index = 0, plugin:count() - 1 do
+      if plugin:code(index) ~= globTag then continue end
 
-      local id, idAt, idSize = plugin:findSubrecord(i, NAME)
+      local id, idAt, idSize = plugin:findSubrecord(index, nameTag)
       if not id then continue end
 
       local raw = buffer.readstring(id :: buffer, idAt, idSize)
@@ -147,7 +149,7 @@ local function morrowindInfo(plugin: Plugin): Info
 
       if string.lower(raw) ~= string.lower(name) then continue end
 
-      local value, valueAt, valueSize = plugin:findSubrecord(i, FLTV)
+      local value, valueAt, valueSize = plugin:findSubrecord(index, fltvTag)
       if not value or valueSize < 4 then return nil end
 
       return buffer.readf32(value :: buffer, valueAt)
@@ -166,13 +168,13 @@ local function morrowindInfo(plugin: Plugin): Info
 
   -- The player's level and class are on the `player` NPC_ record, as OpenMW's importer reads
   -- them (apps/essimporter/converter.hpp, ConvertNPC).
-  local NPC_ = tes3.tags.code 'NPC_'
+  local npcTag = tes3.tags.code 'NPC_'
   local player: { [string]: any }? = nil
-  for i = 0, plugin:count() - 1 do
-    if plugin:code(i) ~= NPC_ then continue end
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) ~= npcTag then continue end
 
     -- A record that doesn't decode isn't the player's, as far as the header goes.
-    local ok, value = pcall(plugin.decode, plugin, i)
+    local ok, value = pcall(plugin.decode, plugin, index)
     if ok and value and string.lower(value.id :: string) == 'player' then
       player = value :: any
       break
@@ -252,8 +254,8 @@ local function bgraToTga(source: buffer, at: number, side: number): buffer
   buffer.writeu16(out, 14, side)
   buffer.writeu8(out, 16, 24)
   buffer.writeu8(out, 17, 0x20)
-  for i = 0, pixels - 1 do
-    buffer.copy(out, 18 + i * 3, source, at + i * 4, 3)
+  for pixel = 0, pixels - 1 do
+    buffer.copy(out, 18 + pixel * 3, source, at + pixel * 4, 3)
   end
 
   return out
@@ -268,7 +270,7 @@ local function screenshot(save: Save): (buffer, 'jpeg' | 'tga')
 
   local plugin = save.plugin
   local source: buffer?, at, size = nil, 0, 0
-  if plugin:count() > 0 and plugin:code(0) == TES3 then
+  if plugin:count() > 0 and plugin:code(0) == Tes3Tag then
     source, at, size = plugin:findSubrecord(0, tes3.tags.code 'SCRS')
   end
 
@@ -288,17 +290,17 @@ export type LuaDataRow = { record: number, type: string, value: tes3.LuaValue?, 
 local function luaData(save: Save): { LuaDataRow }
   local plugin = save.plugin
   local out = {}
-  for i = 0, plugin:count() - 1 do
-    local source = plugin:span(i)
-    for _, sub in plugin:subrecords(i) do
+  for index = 0, plugin:count() - 1 do
+    local source = plugin:span(index)
+    for _, sub in plugin:subrecords(index) do
       if sub.tag ~= 'LUAD' then continue end
 
       -- decodeLuaData throws on a payload that isn't serialized Lua; the row says why.
       local ok, value = pcall(tes3.save.decodeLuaData, source, sub.payload, sub.size)
       if ok then
-        table.insert(out, { record = i, type = plugin:tag(i), value = value })
+        table.insert(out, { record = index, type = plugin:tag(index), value = value })
       else
-        table.insert(out, { record = i, type = plugin:tag(i), error = tostring(value) })
+        table.insert(out, { record = index, type = plugin:tag(index), error = tostring(value) })
       end
     end
   end

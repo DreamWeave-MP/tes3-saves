@@ -116,7 +116,8 @@ export type Pool = dream_intern_Pool
 local function pool(): Pool return intern.new 'ascii-nocase' end
 
 export type Ids = {
-  --- Each record's id as a token of the pool, or false for one without (record `k` at `k + 1`).
+  --- Each record's id as a token of the pool, or false for one without (record `index` at
+  --- `index + 1`).
   tokens: { number | false },
   --- Each record's type, as a number.
   codes: { number },
@@ -133,10 +134,10 @@ local function ids(plugin: tes3.Plugin, ids: Pool): Ids
 
   local count = plugin:count()
   local tokens: { number | false }, codes: { number } = {}, {}
-  for k = 0, count - 1 do
-    local source, at, length = tes3.records.idSpan(plugin, k)
-    tokens[k + 1] = if source then ids:intern(source, at, length) else false
-    codes[k + 1] = plugin:code(k)
+  for index = 0, count - 1 do
+    local source, at, length = tes3.records.idSpan(plugin, index)
+    tokens[index + 1] = if source then ids:intern(source, at, length) else false
+    codes[index + 1] = plugin:code(index)
   end
 
   local result = { tokens = tokens, codes = codes }

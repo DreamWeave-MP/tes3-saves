@@ -32,32 +32,34 @@ end
 --- Every record of `plugin`, in order.
 local function all(plugin: Plugin): { Record }
   local out: { Record } = {}
-  for i = 0, plugin:count() - 1 do
-    out[i + 1] = record(plugin, i)
+  for index = 0, plugin:count() - 1 do
+    out[index + 1] = record(plugin, index)
   end
 
   return out
 end
 
---- Subrecord `k` (0-based) of `r`, or nil.
-local function sub(r: Record, k: number): Subrecord? return r.subs[k + 1] end
-
---- The tag of subrecord `k` (0-based), or nil.
-local function tagAt(r: Record, k: number): string?
-  local s = r.subs[k + 1]
-  return s and s.tag
+--- Subrecord `position` (0-based) of `record`, or nil.
+local function sub(record: Record, position: number): Subrecord?
+  return record.subs[position + 1]
 end
 
---- Subrecord `k`'s payload as a string.
-local function payload(r: Record, k: number): string
-  local s = r.subs[k + 1]
-  return buffer.readstring(r.source, s.payload, s.size)
+--- The tag of subrecord `position` (0-based), or nil.
+local function tagAt(record: Record, position: number): string?
+  local subrecord = record.subs[position + 1]
+  return subrecord and subrecord.tag
+end
+
+--- Subrecord `position`'s payload as a string.
+local function payload(record: Record, position: number): string
+  local subrecord = record.subs[position + 1]
+  return buffer.readstring(record.source, subrecord.payload, subrecord.size)
 end
 
 --- The first subrecord tagged `tag`, 0-based, or nil.
-local function first(r: Record, tag: string): number?
-  for k, s in r.subs do
-    if s.tag == tag then return k - 1 end
+local function first(record: Record, tag: string): number?
+  for index, subrecord in record.subs do
+    if subrecord.tag == tag then return index - 1 end
   end
 
   return nil
@@ -149,8 +151,8 @@ end
 --- Every record a scan walks: all but the TES3 header and the SAVE record.
 local function isScannable(tag: string): boolean return tag ~= 'TES3' and tag ~= 'SAVE' end
 
-local function equalsIgnoringCase(a: string, b: string): boolean
-  return a == b or string.lower(a) == string.lower(b)
+local function equalsIgnoringCase(left: string, right: string): boolean
+  return left == right or string.lower(left) == string.lower(right)
 end
 
 return table.freeze {
