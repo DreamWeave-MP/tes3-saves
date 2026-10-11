@@ -58,11 +58,14 @@ end
 --[[ Structure ]]
 
 --- Each CSTA object group's and moved reference's layout problems, at the subrecord it's about.
-local function cstaProblems(records: { Record }): { tes3.Diagnostic }
+local function cstaProblems(plugin: Plugin): { tes3.Diagnostic }
   local out = {}
-  for _, record in records do
-    if record.tag ~= 'CSTA' then continue end
+  local cstaCode = tes3.tags.code 'CSTA'
+  -- One cell's state at a time: between them they are most of a save.
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) ~= cstaCode then continue end
 
+    local record = Records.record(plugin, index)
     for position = 0, #record.subs - 1 do
       local tag = Records.tagAt(record, position)
       local offset = record.subs[position + 1].start
@@ -93,7 +96,7 @@ end
 --- The CSTA layout problems' messages.
 local function cstaMessages(plugin: Plugin): { string }
   local out = {}
-  for _, diagnostic in cstaProblems(Records.all(plugin)) do
+  for _, diagnostic in cstaProblems(plugin) do
     table.insert(out, diagnostic.message)
   end
 
@@ -160,7 +163,7 @@ local function validate(plugin: Plugin, originalCodes: boolean?): Validation
     )
   end
 
-  for _, diagnostic in cstaProblems(Records.all(plugin)) do
+  for _, diagnostic in cstaProblems(plugin) do
     table.insert(diagnostics, diagnostic)
   end
 
