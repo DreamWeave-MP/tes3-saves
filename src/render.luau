@@ -11,7 +11,7 @@ field in their order under their own snake_case names, counts sorted by name, a 
 no value left out, and an f32 in an f32's digits. Each report's shape below is the struct it was
 (`SaveInfo`, `SaveCheck`, `SaveStripReport`, the layouts), its fields declared under the names
 jess-save gave them; the name a result has a field under is that name camelCased, never the
-other way about. `@vfs/serialize` writes the three formats as serde did.
+other way about. `@jess/data/value` writes the three formats as serde did.
 
 Codes (`will_not_load`, `dry-run`, a strip's reasons) are not this module's to spell: the
 commands hand them over as jess-save's sources have them, and they are written as they come.
@@ -26,7 +26,7 @@ carried on, so a dump in TOML is one result.
 local Commands = require './commands'
 local DumpYaml = require './dumpyaml'
 local Values = require './values'
-local serialize = require '@vfs/serialize'
+local serialize = require '@jess/data/value'
 local tes3 = require '@tes3'
 
 type Value = serialize.Value
@@ -458,7 +458,7 @@ local function afterString(text: string, position: number): number
   return at
 end
 
---- A TOML document with each array on one line. `@vfs/serialize` writes the toml crate's pretty
+--- A TOML document with each array on one line. `@jess/data/value` writes the toml crate's pretty
 --- layout, an array of two or more items one to a line; jess wrote its plain one, `[a, b]`, and
 --- that is the only way the two differ.
 local function inlineArrays(text: string): string

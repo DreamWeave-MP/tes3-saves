@@ -7,12 +7,12 @@ YAML for a dump's records, as `jess save dump` wrote it (jess's `plugin/display.
 under one key, written for reading. Lists of scalars are inline (`position: [1.5, 2.0, 3.25]`),
 text with line breaks is a literal block, strings are quoted only when a YAML reader could take
 them for something else, and floats are spelled in the fewest digits that read back as the same
-value. Every other report is serde_yaml's layout, which `@vfs/serialize` writes; a dump's isn't.
+value. Every other report is serde_yaml's layout, which `@jess/data/value` writes; a dump's isn't.
 
-Values are `@vfs/serialize`'s model: its ordered maps, arrays, and floats.
+Values are `@jess/data/value`'s model: its ordered maps, arrays, and floats.
 ]]
 
-local serialize = require '@vfs/serialize'
+local serialize = require '@jess/data/value'
 
 type Value = serialize.Value
 
