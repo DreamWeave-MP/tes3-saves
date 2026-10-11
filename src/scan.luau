@@ -40,11 +40,11 @@ for _, tag in ObjectStateTagList do
   ObjectStateTags[tag] = true
 end
 
---- The fourCC of the nearest AIPK before subrecord `k`, if any (and if it's four bytes).
-local function aiPackageTypeBefore(r: Record, k: number): string?
-  for j = k - 1, 0, -1 do
-    if tagAt(r, j) == 'AIPK' then
-      local data = payload(r, j)
+--- The fourCC of the nearest AIPK before subrecord `position`, if any (and if it's four bytes).
+local function aiPackageTypeBefore(record: Record, position: number): string?
+  for candidate = position - 1, 0, -1 do
+    if tagAt(record, candidate) == 'AIPK' then
+      local data = payload(record, candidate)
       return if #data == 4 then data else nil
     end
   end
@@ -53,36 +53,41 @@ local function aiPackageTypeBefore(r: Record, k: number): string?
 end
 
 --- Only AI Combat and Pursue write TARG as a RefNum; Escort, Follow, Activate, and GSCR write a RefId.
-local function isAiRefnumTarget(r: Record, k: number): boolean
-  local package = aiPackageTypeBefore(r, k)
+local function isAiRefnumTarget(record: Record, position: number): boolean
+  local package = aiPackageTypeBefore(record, position)
   return package == 'COMB' or package == 'PURS'
 end
 
-local function isPlayerRecord(r: Record): boolean
-  local name = Records.first(r, 'NAME')
+local function isPlayerRecord(record: Record): boolean
+  local name = Records.first(record, 'NAME')
   if not name then return false end
 
-  local id = Records.refId(payload(r, name))
+  local id = Records.refId(payload(record, name))
   return id ~= nil and string.lower(id) == 'player'
 end
 
---- What the RefId in subrecord `k` means, as jess-save's `classify_openmw_save_ref_id_field`
---- names it, or nil for a field that holds none (or one the engine drops on its own).
-local function refIdField(r: Record, k: number, inventoryItemsRemaining: number): string?
-  local tag = tagAt(r, k) :: string
-  if tagAt(r, k - 1) == 'FRMR' then
+--- What the RefId in subrecord `position` means, as jess-save's
+--- `classify_openmw_save_ref_id_field` names it, or nil for a field that holds none (or one the
+--- engine drops on its own).
+local function refIdField(
+  record: Record,
+  position: number,
+  inventoryItemsRemaining: number
+): string?
+  local tag = tagAt(record, position) :: string
+  if tagAt(record, position - 1) == 'FRMR' then
     if tag ~= 'NAME' then return nil end
 
     if inventoryItemsRemaining > 0 then return 'inventory_item_base_object' end
 
-    if r.tag == 'CSTA' then return 'cell_ref_base_object' end
+    if record.tag == 'CSTA' then return 'cell_ref_base_object' end
   end
 
-  if r.tag == 'CSTA' and k == 0 and tag == 'NAME' then return 'saved_cell_state' end
+  if record.tag == 'CSTA' and position == 0 and tag == 'NAME' then return 'saved_cell_state' end
 
   -- The saved player record: a missing race or class stops the load (openmw esmstore.cpp:805);
   -- missing head or hair renders the player without them (npcanimation.cpp:478-494).
-  if r.tag == 'NPC_' and isPlayerRecord(r) then
+  if record.tag == 'NPC_' and isPlayerRecord(record) then
     if tag == 'RNAM' then return 'player_race' end
 
     if tag == 'CNAM' then return 'player_class' end
@@ -92,27 +97,27 @@ local function refIdField(r: Record, k: number, inventoryItemsRemaining: number)
     if tag == 'KNAM' then return 'player_hair' end
   end
 
-  local record = r.tag
+  local recordTag = record.tag
   if tag == 'NAME' then
-    if record == 'GSCR' then return 'global_script' end
+    if recordTag == 'GSCR' then return 'global_script' end
 
-    if record == 'GLOB' then return 'global_variable' end
+    if recordTag == 'GLOB' then return 'global_variable' end
 
-    if ObjectStateTags[record] then return 'saved_record_id' end
+    if ObjectStateTags[recordTag] then return 'saved_record_id' end
 
-    if record == 'PLAY' then return 'player_ref_id' end
+    if recordTag == 'PLAY' then return 'player_ref_id' end
 
-    if record == 'STLN' then return 'stolen_item_ref_id' end
+    if recordTag == 'STLN' then return 'stolen_item_ref_id' end
 
-    if record == 'MARK' then return 'custom_marker_cell' end
+    if recordTag == 'MARK' then return 'custom_marker_cell' end
   end
 
   -- A missing birthsign makes the save fail to load (openmw player.cpp:372-375).
-  if record == 'PLAY' and tag == 'SIGN' then return 'player_birthsign' end
+  if recordTag == 'PLAY' and tag == 'SIGN' then return 'player_birthsign' end
 
   -- CellRef fields the engine keeps when their record is gone, breaking the object in play. These
   -- tags mean other things in dynamic records, so only object state in CSTA and PLAY counts.
-  if record == 'CSTA' or record == 'PLAY' then
+  if recordTag == 'CSTA' or recordTag == 'PLAY' then
     if tag == 'ANAM' then return 'cell_ref_owner' end
 
     if tag == 'CNAM' then return 'cell_ref_owner_faction' end
@@ -128,24 +133,24 @@ local function refIdField(r: Record, k: number, inventoryItemsRemaining: number)
     if tag == 'CELL' then return 'ai_package_cell' end
   end
 
-  if record == 'DCOU' and tag == 'ID__' then return 'death_count_actor' end
+  if recordTag == 'DCOU' and tag == 'ID__' then return 'death_count_actor' end
 
-  if record == 'PROJ' then
+  if recordTag == 'PROJ' then
     if tag == 'ID__' then return 'projectile_base_object' end
 
     if tag == 'BOW_' then return 'projectile_bow_object' end
   end
 
-  if record == 'MPRJ' then
+  if recordTag == 'MPRJ' then
     if tag == 'ID__' then return 'magic_projectile_base_object' end
 
     if tag == 'SPEL' then return 'magic_projectile_spell' end
   end
 
   if tag == 'TARG' then
-    if record == 'GSCR' then return 'global_script_target_ref_id' end
+    if recordTag == 'GSCR' then return 'global_script_target_ref_id' end
 
-    if not isAiRefnumTarget(r, k) then return 'ai_target_ref_id' end
+    if not isAiRefnumTarget(record, position) then return 'ai_target_ref_id' end
   end
 
   if tag == 'SPEL' then return 'spell_state_spell' end
@@ -159,27 +164,29 @@ local function refIdField(r: Record, k: number, inventoryItemsRemaining: number)
   return nil
 end
 
---- What the FormId in subrecord `k` means (`classify_openmw_save_form_id_field`), or nil.
-local function formIdField(r: Record, k: number): string?
-  local tag = tagAt(r, k) :: string
-  if tag == 'TARG' then return if isAiRefnumTarget(r, k) then 'ai_target_refnum' else nil end
+--- What the FormId in subrecord `position` means (`classify_openmw_save_form_id_field`), or nil.
+local function formIdField(record: Record, position: number): string?
+  local tag = tagAt(record, position) :: string
+  if tag == 'TARG' then
+    return if isAiRefnumTarget(record, position) then 'ai_target_refnum' else nil
+  end
 
-  local record = r.tag
+  local recordTag = record.tag
   if tag == 'FRMR' then
-    if record == 'LUAM' then return 'lua_refnum' end
+    if recordTag == 'LUAM' then return 'lua_refnum' end
 
-    if record == 'GSCR' then return 'global_script_target_refnum' end
+    if recordTag == 'GSCR' then return 'global_script_target_refnum' end
 
     return 'object_refnum'
   end
 
-  if record == 'CSTA' and tag == 'MVRF' then return 'moved_refnum' end
+  if recordTag == 'CSTA' and tag == 'MVRF' then return 'moved_refnum' end
 
-  if (record == 'PROJ' or record == 'MPRJ') and tag == 'ACTO' then
+  if (recordTag == 'PROJ' or recordTag == 'MPRJ') and tag == 'ACTO' then
     return 'projectile_caster_refnum'
   end
 
-  if record == 'MPRJ' and tag == 'ITEM' then return 'magic_projectile_item_refnum' end
+  if recordTag == 'MPRJ' and tag == 'ITEM' then return 'magic_projectile_item_refnum' end
 
   if tag == 'CAST' then return 'active_spell_caster_refnum' end
 
@@ -207,29 +214,29 @@ export type RefIdField = { record: Record, subrecord: number, meaning: string, i
 --- keeps the player's own record id.
 local function refIdFields(records: { Record }, protected: boolean?): { RefIdField }
   local out = {}
-  for _, r in records do
-    if not Records.isScannable(r.tag) then continue end
+  for _, record in records do
+    if not Records.isScannable(record.tag) then continue end
 
     local inventoryItemsRemaining = 0
-    for k = 0, #r.subs - 1 do
-      if tagAt(r, k) == 'ICNT' then
-        inventoryItemsRemaining = Records.inventoryCount(payload(r, k))
+    for position = 0, #record.subs - 1 do
+      if tagAt(record, position) == 'ICNT' then
+        inventoryItemsRemaining = Records.inventoryCount(payload(record, position))
         continue
       end
 
-      local meaning = refIdField(r, k, inventoryItemsRemaining)
+      local meaning = refIdField(record, position, inventoryItemsRemaining)
       if not meaning then continue end
 
       if meaning == 'inventory_item_base_object' then
         inventoryItemsRemaining = math.max(inventoryItemsRemaining - 1, 0)
       end
 
-      local id = Records.refId(payload(r, k))
+      local id = Records.refId(payload(record, position))
       if not id then continue end
 
-      if not protected and isProtected(r.tag, meaning, id) then continue end
+      if not protected and isProtected(record.tag, meaning, id) then continue end
 
-      table.insert(out, { record = r, subrecord = k, meaning = meaning, id = id })
+      table.insert(out, { record = record, subrecord = position, meaning = meaning, id = id })
     end
   end
 
@@ -240,15 +247,15 @@ end
 
 export type Range = { start: number, finish: number }
 
---- The CSTA object group subrecord `k` is in, `OBJE` up to the next `OBJE` or `MVRF`, and where its
---- FRMR is; nil outside one.
-local function cstaReferenceGroup(r: Record, k: number): (Range?, number)
-  if r.tag ~= 'CSTA' or k >= #r.subs then return nil, 0 end
+--- The CSTA object group subrecord `position` is in, `OBJE` up to the next `OBJE` or `MVRF`, and
+--- where its FRMR is; nil outside one.
+local function cstaReferenceGroup(record: Record, position: number): (Range?, number)
+  if record.tag ~= 'CSTA' or position >= #record.subs then return nil, 0 end
 
   local start: number? = nil
-  for j = k, 0, -1 do
-    if tagAt(r, j) == 'OBJE' then
-      start = j
+  for candidate = position, 0, -1 do
+    if tagAt(record, candidate) == 'OBJE' then
+      start = candidate
       break
     end
   end
@@ -256,139 +263,143 @@ local function cstaReferenceGroup(r: Record, k: number): (Range?, number)
   if not start then return nil, 0 end
 
   local frmr = start + 1
-  if tagAt(r, frmr) ~= 'FRMR' then return nil, 0 end
+  if tagAt(record, frmr) ~= 'FRMR' then return nil, 0 end
 
-  local finish = #r.subs
-  for j = frmr + 1, #r.subs - 1 do
-    local tag = tagAt(r, j)
+  local finish = #record.subs
+  for candidate = frmr + 1, #record.subs - 1 do
+    local tag = tagAt(record, candidate)
     if tag == 'OBJE' or tag == 'MVRF' then
-      finish = j
+      finish = candidate
       break
     end
   end
 
-  if k < start or k >= finish then return nil, 0 end
+  if position < start or position >= finish then return nil, 0 end
 
   return { start = start, finish = finish }, frmr
 end
 
 --- A moved-reference marker: `MVRF` and the `NAME` cell id after it.
-local function cstaMovedReferenceGroup(r: Record, k: number): Range?
-  if r.tag ~= 'CSTA' or tagAt(r, k) ~= 'MVRF' then return nil end
+local function cstaMovedReferenceGroup(record: Record, position: number): Range?
+  if record.tag ~= 'CSTA' or tagAt(record, position) ~= 'MVRF' then return nil end
 
-  if tagAt(r, k + 1) ~= 'NAME' then return nil end
+  if tagAt(record, position + 1) ~= 'NAME' then return nil end
 
-  return { start = k, finish = k + 2 }
+  return { start = position, finish = position + 2 }
 end
 
---- The inventory item subrecord `k` is in: its FRMR up to the next item's (or the OBJE before it).
-local function inventoryItemGroup(r: Record, k: number): Range?
-  if k >= #r.subs then return nil end
+--- The inventory item subrecord `position` is in: its FRMR up to the next item's (or the OBJE
+--- before it).
+local function inventoryItemGroup(record: Record, position: number): Range?
+  if position >= #record.subs then return nil end
 
   local start: number? = nil
-  for j = k, 0, -1 do
-    if tagAt(r, j) == 'FRMR' then
-      start = j
+  for candidate = position, 0, -1 do
+    if tagAt(record, candidate) == 'FRMR' then
+      start = candidate
       break
     end
   end
 
   if not start then return nil end
 
-  local finish = #r.subs
-  for j = start + 1, #r.subs - 1 do
-    if tagAt(r, j) == 'FRMR' then
-      finish = if j > 0 and tagAt(r, j - 1) == 'OBJE' then j - 1 else j
+  local finish = #record.subs
+  for candidate = start + 1, #record.subs - 1 do
+    if tagAt(record, candidate) == 'FRMR' then
+      finish = if candidate > 0 and tagAt(record, candidate - 1) == 'OBJE'
+        then candidate - 1
+        else candidate
       break
     end
   end
 
-  if k < start or k >= finish then return nil end
+  if position < start or position >= finish then return nil end
 
   return { start = start, finish = finish }
 end
 
 --- The ICNT an inventory group at `groupStart` counts toward.
-local function inventoryCountFor(r: Record, groupStart: number): number?
-  for j = groupStart - 1, 0, -1 do
-    if tagAt(r, j) == 'ICNT' then return j end
+local function inventoryCountFor(record: Record, groupStart: number): number?
+  for candidate = groupStart - 1, 0, -1 do
+    if tagAt(record, candidate) == 'ICNT' then return candidate end
   end
 
   return nil
 end
 
 --- A stolen item in STLN: its NAME up to the next NAME.
-local function stolenItemGroup(r: Record, k: number): Range?
-  if r.tag ~= 'STLN' or k >= #r.subs then return nil end
+local function stolenItemGroup(record: Record, position: number): Range?
+  if record.tag ~= 'STLN' or position >= #record.subs then return nil end
 
   local start: number? = nil
-  for j = k, 0, -1 do
-    if tagAt(r, j) == 'NAME' then
-      start = j
+  for candidate = position, 0, -1 do
+    if tagAt(record, candidate) == 'NAME' then
+      start = candidate
       break
     end
   end
 
   if not start then return nil end
 
-  local finish = #r.subs
-  for j = start + 1, #r.subs - 1 do
-    if tagAt(r, j) == 'NAME' then
-      finish = j
+  local finish = #record.subs
+  for candidate = start + 1, #record.subs - 1 do
+    if tagAt(record, candidate) == 'NAME' then
+      finish = candidate
       break
     end
   end
 
-  if k < start or k >= finish then return nil end
+  if position < start or position >= finish then return nil end
 
   return { start = start, finish = finish }
 end
 
 --- An AI package: its AIPK up to the next AIPK, the sequence's LAST, or the record's end.
-local function aiPackage(r: Record, k: number): Range?
+local function aiPackage(record: Record, position: number): Range?
   local start: number? = nil
-  for j = k, 0, -1 do
-    if tagAt(r, j) == 'AIPK' then
-      start = j
+  for candidate = position, 0, -1 do
+    if tagAt(record, candidate) == 'AIPK' then
+      start = candidate
       break
     end
   end
 
   if not start then return nil end
 
-  local finish = #r.subs
-  for j = start + 1, #r.subs - 1 do
-    local tag = tagAt(r, j)
+  local finish = #record.subs
+  for candidate = start + 1, #record.subs - 1 do
+    local tag = tagAt(record, candidate)
     if tag == 'AIPK' or tag == 'LAST' then
-      finish = j
+      finish = candidate
       break
     end
   end
 
-  if k < start or k >= finish then return nil end
+  if position < start or position >= finish then return nil end
 
   return { start = start, finish = finish }
 end
 
 --- Saves write a locked object's level as FLTV, `i32::MAX` for a key-only (level 0) lock.
-local function isPickableLockBefore(r: Record, k: number): boolean
-  if k < 1 or tagAt(r, k - 1) ~= 'FLTV' then return false end
+local function isPickableLockBefore(record: Record, position: number): boolean
+  if position < 1 or tagAt(record, position - 1) ~= 'FLTV' then return false end
 
-  local data = payload(r, k - 1)
+  local data = payload(record, position - 1)
   if #data ~= 4 then return false end
 
   local level = Records.i32At(data)
   return level > 0 and level ~= 2147483647
 end
 
---- Whether subrecord `k` is in a CSTA object group whose FRMR points at content file `target`.
-local function inTargetCstaGroup(r: Record, k: number, target: number): boolean
-  if r.tag ~= 'CSTA' then return false end
+--- Whether subrecord `position` is in a CSTA object group whose FRMR points at content file
+--- `target`.
+local function inTargetCstaGroup(record: Record, position: number, target: number): boolean
+  if record.tag ~= 'CSTA' then return false end
 
-  local group, frmr = cstaReferenceGroup(r, k)
+  local group, frmr = cstaReferenceGroup(record, position)
   if not group then return false end
 
-  local index, contentFile = Records.wideFormId(payload(r, frmr))
+  local index, contentFile = Records.wideFormId(payload(record, frmr))
   return index ~= nil and contentFile == target
 end
 
@@ -425,8 +436,8 @@ export type FieldEdit = { operation: string, range: Range, reason: string }
 
 --- The fix for a target-only id in object state OpenMW keeps after load (owner, faction, trap,
 --- global, a pickable lock's key, AI packages, stale spell and script state), or nil.
-local function fieldEdit(r: Record, k: number, meaning: string): FieldEdit?
-  local single = { start = k, finish = k + 1 }
+local function fieldEdit(record: Record, position: number, meaning: string): FieldEdit?
+  local single = { start = position, finish = position + 1 }
   if meaning == 'cell_ref_owner' then
     return {
       operation = 'clear_cell_ref_field',
@@ -453,16 +464,16 @@ local function fieldEdit(r: Record, k: number, meaning: string): FieldEdit?
 
   if meaning == 'cell_ref_owner_faction' then
     -- The faction rank (INDX) is written right after CNAM and means nothing without it.
-    local width = if tagAt(r, k + 1) == 'INDX' then 2 else 1
+    local width = if tagAt(record, position + 1) == 'INDX' then 2 else 1
     return {
       operation = 'clear_cell_ref_field',
-      range = { start = k, finish = k + width },
+      range = { start = position, finish = position + width },
       reason = 'owner_faction_is_introduced_by_removed_dependency',
     }
   end
 
   if meaning == 'cell_ref_key' then
-    if not isPickableLockBefore(r, k) then return nil end
+    if not isPickableLockBefore(record, position) then return nil end
 
     return {
       operation = 'clear_cell_ref_field',
@@ -487,16 +498,16 @@ local function fieldEdit(r: Record, k: number, meaning: string): FieldEdit?
 
   if meaning == 'spell_state_used_spell' then
     -- SpellState writes a used power as USED + TIME; NpcStats writes a lone USED.
-    local width = if tagAt(r, k + 1) == 'TIME' then 2 else 1
+    local width = if tagAt(record, position + 1) == 'TIME' then 2 else 1
     return {
       operation = 'delete_stale_state_field',
-      range = { start = k, finish = k + width },
+      range = { start = position, finish = position + width },
       reason = 'state_references_record_introduced_by_removed_dependency',
     }
   end
 
   if meaning == 'ai_target_ref_id' or meaning == 'ai_package_cell' then
-    local range = aiPackage(r, k)
+    local range = aiPackage(record, position)
     if not range then return nil end
 
     return {
@@ -510,17 +521,17 @@ local function fieldEdit(r: Record, k: number, meaning: string): FieldEdit?
 end
 
 --- Whether a strip has a planned fix for a target-only id in this field.
-local function canPlanDelete(r: Record, k: number, meaning: string): boolean
-  if deletePolicy(r.tag, meaning) or fieldEdit(r, k, meaning) then return true end
+local function canPlanDelete(record: Record, position: number, meaning: string): boolean
+  if deletePolicy(record.tag, meaning) or fieldEdit(record, position, meaning) then return true end
 
-  if meaning == 'cell_ref_base_object' then return (cstaReferenceGroup(r, k)) ~= nil end
+  if meaning == 'cell_ref_base_object' then return (cstaReferenceGroup(record, position)) ~= nil end
 
   if meaning == 'inventory_item_base_object' then
-    local group = inventoryItemGroup(r, k)
-    return group ~= nil and inventoryCountFor(r, group.start) ~= nil
+    local group = inventoryItemGroup(record, position)
+    return group ~= nil and inventoryCountFor(record, group.start) ~= nil
   end
 
-  if meaning == 'stolen_item_ref_id' then return stolenItemGroup(r, k) ~= nil end
+  if meaning == 'stolen_item_ref_id' then return stolenItemGroup(record, position) ~= nil end
 
   return false
 end
@@ -538,32 +549,33 @@ export type Hit = {
 --- Every FormId and serialized Lua RefNum the scans know, with the content file it points at.
 local function contentFileHits(records: { Record }): { Hit }
   local hits = {}
-  for _, r in records do
-    if not Records.isScannable(r.tag) then continue end
+  for _, record in records do
+    if not Records.isScannable(record.tag) then continue end
 
-    for k = 0, #r.subs - 1 do
-      local meaning = formIdField(r, k)
+    for position = 0, #record.subs - 1 do
+      local meaning = formIdField(record, position)
       if meaning then
-        local index, contentFile = Records.wideFormId(payload(r, k))
+        local index, contentFile = Records.wideFormId(payload(record, position))
         if index then
           table.insert(hits, {
-            record = r,
-            subrecord = k,
+            record = record,
+            subrecord = position,
             meaning = meaning,
             contentFile = contentFile,
             localIndex = index,
           })
         end
-      elseif tagAt(r, k) == 'LUAD' then
-        local s = r.subs[k + 1]
+      elseif tagAt(record, position) == 'LUAD' then
+        local subrecord = record.subs[position + 1]
         -- decodeLuaData throws on a payload that isn't serialized Lua; such a payload holds no refs.
-        local ok, value = pcall(tes3.save.decodeLuaData, r.source, s.payload, s.size)
+        local ok, value =
+          pcall(tes3.save.decodeLuaData, record.source, subrecord.payload, subrecord.size)
         if not ok then continue end
 
         for _, ref in tes3.save.luaRefs(value :: tes3.LuaValue) do
           table.insert(hits, {
-            record = r,
-            subrecord = k,
+            record = record,
+            subrecord = position,
             meaning = 'lua_serialized_refnum',
             contentFile = ref.contentFile,
             localIndex = ref.index,
@@ -587,12 +599,13 @@ local function hasUnknownUserdata(value: tes3.LuaValue): boolean
 end
 
 --- Whether a record has a LUAD payload that doesn't decode or holds userdata jess can't read.
-local function hasUnparsedLuaData(r: Record): boolean
-  for _, s in r.subs do
-    if s.tag ~= 'LUAD' then continue end
+local function hasUnparsedLuaData(record: Record): boolean
+  for _, subrecord in record.subs do
+    if subrecord.tag ~= 'LUAD' then continue end
 
     -- decodeLuaData throws on a payload that isn't serialized Lua; that's unparsed.
-    local ok, value = pcall(tes3.save.decodeLuaData, r.source, s.payload, s.size)
+    local ok, value =
+      pcall(tes3.save.decodeLuaData, record.source, subrecord.payload, subrecord.size)
     if not ok or hasUnknownUserdata(value :: tes3.LuaValue) then return true end
   end
 
@@ -630,9 +643,9 @@ export type Coverage = {
 local function coverage(records: { Record }): Coverage
   local risky: { [string]: number } = {}
   local any = false
-  for _, r in records do
-    if hasUnparsedLuaData(r) then
-      risky[r.tag] = (risky[r.tag] or 0) + 1
+  for _, record in records do
+    if hasUnparsedLuaData(record) then
+      risky[record.tag] = (risky[record.tag] or 0) + 1
       any = true
     end
   end
