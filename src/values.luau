@@ -332,8 +332,8 @@ end
 local function values(save: Save): { unknown }
   local plugin = save.plugin
   local headerTag = if save.game == 'openmw' then 'SAVE' else 'TES3'
-  -- info throws on metadata that doesn't read; the header record is then shown like any other.
   local unnamed: Save = { plugin = plugin, game = save.game, name = '' }
+  -- info throws on metadata that doesn't read; the header record is then shown like any other.
   local ok, header = pcall(Read.info, unnamed)
   local indexes: Indexes = { contentFiles = {}, luaScripts = {} }
   if save.game == 'openmw' then

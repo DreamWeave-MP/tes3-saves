@@ -1632,7 +1632,8 @@ local function deleteRecords(plugin: Plugin, edits: { Edit })
   end
 
   -- OpenMW writes the exact count of records after TES3 (statemanagerimp.cpp:289-298); this also
-  -- repairs saves an earlier strip left miscounted.
+  -- repairs saves an earlier strip left miscounted. updateRecordCount throws on a HEDR that doesn't
+  -- read; that's the error to report.
   local ok, problem = pcall(plugin.updateRecordCount, plugin)
   if not ok then error(`failed to update the save's record count: {problem}`, 0) end
 end
@@ -1839,10 +1840,12 @@ local function strip(
   local encoding = save.plugin.encoding
   local openOptions: tes3.OpenOptions = { encoding = encoding, profile = save.plugin.profile }
   -- Plans index the save's current records, so start from its current bytes, edits included.
+  -- tes3.open throws on bytes that don't frame; that's the error to report.
   local ok, opened = pcall(function(): Plugin return tes3.open(save.plugin:save(), openOptions) end)
   if not ok then error(`failed to parse '{save.name}': {opened}`, 0) end
 
   local plugin = opened :: Plugin
+  -- profile throws on metadata that doesn't read; the error to report names the save.
   local read, profile = pcall(tes3.save.profile, plugin)
   if not read then error(`failed to read the save metadata of '{save.name}': {profile}`, 0) end
 

@@ -381,6 +381,7 @@ local function check(save: Save, options: CheckOptions?): Check
   Read.requireOpenMw(save, 'check')
   local given: CheckOptions = options or {}
   local plugin = save.plugin
+  -- profile throws on metadata that doesn't read; the error to report names the save.
   local ok, profile = pcall(tes3.save.profile, plugin)
   if not ok then error(`failed to read the save metadata of '{save.name}': {profile}`, 0) end
 
