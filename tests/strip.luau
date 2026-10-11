@@ -1,0 +1,1495 @@
+--!strict
+--!native
+-- `tes3-saves strip`, scenario for scenario as jess's `jess save strip` tests had it
+-- (`libs/cli/tests/save_strip.rs`): the same saves and content files on disk, the same options,
+-- and the same things asked of the JSON report, which is read back as that harness read it. Each
+-- run goes the way `run` does: `parse`, the command, `render`, `status`.
+--
+-- That harness gave a strip its configuration through the library, because `jess save` read
+-- none; here it is `--config`.
+local cli = require '@tes3-saves/cli'
+local commands = require '@tes3-saves/commands'
+local disk = require './disk'
+local fixtures = require './fixtures'
+local json = require '@jess/json'
+local plugins = require './plugins'
+local saves = require '@tes3-saves'
+local tes3 = require '@tes3'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local record, subrecord = plugins.record, plugins.subrecord
+local refId, formId = fixtures.refId, fixtures.formId
+
+--- One run of `tes3-saves strip --format json`: whether it exited 0, the report it printed, and
+--- what it said on standard error. A run that failed outright printed no report.
+local function run(arguments: { string }): (boolean, any, string)
+  local argv = { 'strip', '--format', 'json' }
+  table.move(arguments, 1, #arguments, #argv + 1, argv)
+  local request, problem = cli.parse(argv)
+  if not request or request.command ~= 'strip' then error(problem or 'not a strip', 0) end
+
+  -- `strip` raises for a request it can't carry out: a content file that can't be read, an output
+  -- that is the save. `run` exits 9 with the message; here the message is the result.
+  local done, result = pcall(commands.strip, request.request)
+  if not done then return false, {}, tostring(result) end
+
+  local document = cli.render(result, { format = request.format })
+  local status = cli.status(result)
+  return status == 0, json.decode(document), if status == 0 then '' else 'nothing was written'
+end
+
+--- `strip` of `dependencies` from a laid-out save, with `extra` options, against its openmw.cfg
+--- unless `config` is false.
+local function strip(
+  laid: disk.Installed,
+  extra: { string },
+  dependencies: { string },
+  config: boolean?
+): (boolean, any, string)
+  local arguments = table.clone(extra)
+  if config ~= false then
+    table.insert(arguments, '--config')
+    table.insert(arguments, laid.config)
+  end
+
+  table.insert(arguments, laid.save)
+  table.move(dependencies, 1, #dependencies, #arguments + 1, arguments)
+  return run(arguments)
+end
+
+--- A strip that has to succeed: its report.
+local function stripOk(
+  laid: disk.Installed,
+  extra: { string },
+  dependencies: { string },
+  config: boolean?
+): any
+  local success, report, message = strip(laid, extra, dependencies, config)
+  if not success then error(`the strip failed: {message}`, 0) end
+
+  return report
+end
+
+--- Whether `value` has everything `pattern` has: fields key by key, and each item of a pattern
+--- list somewhere in the value's list.
+local function matches(value: any, pattern: any): boolean
+  if type(pattern) ~= 'table' then return value == pattern end
+
+  if type(value) ~= 'table' then return false end
+
+  if pattern[1] == nil then
+    for key, wanted in pattern do
+      if not matches(value[key], wanted) then return false end
+    end
+
+    return true
+  end
+
+  for _, wanted in pattern do
+    local found = false
+    for _, item in value do
+      if matches(item, wanted) then
+        found = true
+        break
+      end
+    end
+
+    if not found then return false end
+  end
+
+  return true
+end
+
+--- A decoded report, or part of one, on one line, for a failure to show.
+local function show(value: any): string
+  if type(value) ~= 'table' then return if type(value) == 'string' then `'{value}'` else tostring(value) end
+
+  local parts = {}
+  if value[1] ~= nil then
+    for _, item in value do
+      table.insert(parts, show(item))
+    end
+
+    return `[{table.concat(parts, ', ')}]`
+  end
+
+  for key, item in value do
+    table.insert(parts, `{key} = {show(item)}`)
+  end
+
+  table.sort(parts)
+  return `\{ {table.concat(parts, ', ')} }`
+end
+
+local function expectMatches(value: any, pattern: any)
+  if matches(value, pattern) then return end
+
+  error(`expected {show(pattern)} in {show(value)}`, 0)
+end
+
+--- Whether a name or a string anywhere in a decoded report contains `text`.
+local function mentions(value: any, text: string): boolean
+  if type(value) == 'string' then return string.find(value, text, 1, true) ~= nil end
+
+  if type(value) ~= 'table' then return false end
+
+  for key, item in value do
+    if mentions(key, text) or mentions(item, text) then return true end
+  end
+
+  return false
+end
+
+--- Whether any step warns with text containing `text`.
+local function warned(report: any, text: string): boolean
+  for _, step in report.steps do
+    for _, warning in step.warnings do
+      if string.find(warning, text, 1, true) then return true end
+    end
+  end
+
+  return false
+end
+
+--- `record type, subrecord type, subrecord index` of every sample and planned edit of a step.
+local function locations(step: any): { string }
+  local out = {}
+  local lists = {
+    step.save_references and step.save_references.samples,
+    step.content_file_references and step.content_file_references.samples,
+    step.planned_edits,
+  }
+
+  for _, list in lists do
+    for _, item in list do
+      if item.record_type and item.subrecord_type and item.subrecord_index then
+        table.insert(out, `{item.record_type} {item.subrecord_type} {item.subrecord_index}`)
+      end
+    end
+  end
+
+  return out
+end
+
+--- The content files a save on disk depends on.
+local function dependenciesOf(path: string): { string } return saves.info(saves.open(path)).dependencies end
+
+--- The subrecord tags of the first record tagged `tag` in a save on disk.
+local function tagsOf(path: string, tag: string): { string }
+  local plugin = saves.open(path).plugin
+  for index = 0, plugin:count() - 1 do
+    if plugin:tag(index) ~= tag then continue end
+
+    local tags = {}
+    for _, sub in plugin:subrecords(index) do
+      table.insert(tags, sub.tag)
+    end
+
+    return tags
+  end
+
+  return error(`no {tag} record`, 0)
+end
+
+local function unchanged(laid: disk.Installed): boolean return disk.read(laid.save) == laid.bytes end
+
+--- Load orders of content files that define nothing: one, two, and three of them.
+local Base = { ['Morrowind.esm'] = disk.scenario('plain').files['Morrowind.esm'] }
+local TwoFiles = disk.scenario('check-order').files
+local ThreeFiles = disk.scenario('lua-refnums').files
+local Two = { 'Morrowind.esm', 'Tribunal.esm' }
+local Three = { 'Morrowind.esm', 'Tribunal.esm', 'Bloodmoon.esm' }
+
+suite.describe('plans', function()
+  suite.it('reports the dependency plan', function()
+    local laid = disk.install('plain', 'strip-plan')
+    local report = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' })
+    local step = report.steps[1]
+    expectMatches(step, {
+      dependency = 'Morrowind.esm',
+      mode = 'dry-run',
+      dependency_index = 0,
+      dependencies_before = 1,
+      dependencies_after = 0,
+      save_format = {
+        format_version = fixtures.CurrentFormatVersion,
+        mutation_status = 'supported',
+        reason = 'current_openmw_save_format',
+      },
+      blockers = {
+        status = 'no_known_blockers',
+        protected = {
+          {
+            kind = 'player_record',
+            count = 1,
+            action = 'never_remove_or_reclassify_as_dependency_content',
+          },
+        },
+      },
+      planned_operations = {
+        { status = 'protected', name = 'preserve_protected_player_record', count = 1 },
+        { status = 'planned', name = 'remove_dependency_from_save_depe', count = 1 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'remove_save_dependency',
+          record_index = 1,
+          record_type = 'SAVE',
+          subrecord_type = 'DEPE',
+          subrecord_index = 8,
+          old_content_file_index = 0,
+        },
+      },
+      mutation_readiness = {
+        status = 'eligible_for_dry_run',
+        can_attempt_dry_run = true,
+        reason = 'planned_edits_available',
+      },
+      reference_coverage = {
+        status = 'known_fields',
+        known_scans = {
+          'openmw_refid_name_fields',
+          'openmw_refid_projectile_fields',
+          'openmw_refid_spell_fields',
+          'openmw_refid_death_count_fields',
+          'openmw_refid_custom_marker_fields',
+          'openmw_csta_cell_state_fields',
+          'openmw_formid_frmr_fields',
+          'openmw_formid_csta_mvrf_fields',
+          'openmw_formid_projectile_fields',
+          'openmw_formid_global_script_fields',
+          'openmw_formid_active_spell_fields',
+          'openmw_formid_creature_state_fields',
+          'openmw_formid_ai_sequence_fields',
+        },
+      },
+      dry_run = { requested = true, status = 'verified', output = 'in_memory_only' },
+      mutation = 'dry_run_only',
+    })
+    expect(#step.planned_operations).toBe(2)
+    expect(#step.planned_edits).toBe(1)
+    expect(#step.reference_coverage.known_scans).toBe(18)
+    expect(warned(report, 'reference scan is partial')).toBe(false)
+  end)
+
+  suite.it('prints the plan as compact JSON, as serde_json wrote it', function()
+    local laid = disk.install('plain', 'strip-structured')
+    local request = cli.parse { 'strip', '--format', 'json', '--dry-run', '--config', laid.config, laid.save, 'Morrowind.esm' }
+    assert(request and request.command == 'strip')
+    local document = cli.render(commands.strip(request.request), { format = request.format })
+    for _, expected in {
+      '"dependency":"Morrowind.esm"',
+      '"mode":"dry-run"',
+      '"dependency_index":0',
+      '"requires_content_file_index_remapping":false',
+      `"save_format":\{"format_version":{fixtures.CurrentFormatVersion}`,
+      '"mutation_status":"supported"',
+      '"blockers":{"status":"no_known_blockers"',
+      '"reference_coverage":{"status":"known_fields"',
+      '"planned_operations":[{"name":"preserve_protected_player_record"',
+      '"planned_edits":[{"operation":"remove_save_dependency"',
+      '"mutation_readiness":{"status":"eligible_for_dry_run","can_attempt_dry_run":true',
+      '"dry_run":{"requested":true,"status":"verified"',
+    } do
+      expect(document).toContain(expected)
+    end
+
+    expect(string.find(document, 'reference scan is partial', 1, true)).toBeNil()
+    expect(string.sub(document, -2)).toBe '}\n'
+    expect(select(2, string.gsub(document, '\n', ''))).toBe(1)
+  end)
+
+  suite.it('applies an eligible plan in memory on a dry run, and writes nothing', function()
+    local laid = disk.install('plain', 'strip-dry-run')
+    local step = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' }).steps[1]
+    expectMatches(step, {
+      mode = 'dry-run',
+      mutation_readiness = { can_attempt_dry_run = true },
+      dry_run = {
+        requested = true,
+        status = 'verified',
+        reason = 'in_memory_mutation_reparsed_successfully',
+        output = 'in_memory_only',
+        applied_edits = 1,
+        verification = 'reparsed',
+        post_mutation_verification = {
+          status = 'verified',
+          known_remaining_target_refids = 0,
+          invalid_content_file_refnums = 0,
+        },
+      },
+      mutation = 'dry_run_only',
+    })
+    expect(type(step.dry_run.bytes_before)).toBe 'number'
+    expect(type(step.dry_run.bytes_after)).toBe 'number'
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('reports a blocked plan on a dry run, which still exits 0', function()
+    local bytes = fixtures.save() .. record('PROJ', subrecord('ACTO', formId(42, 0)))
+    local laid = disk.lay('strip-dry-run-blocked', bytes, Base)
+    local report = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' })
+    expectMatches(report.steps[1], {
+      mutation_readiness = { reason = 'blocked_planned_edits_present' },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('deletes a record the removed content introduced, in memory', function()
+    local laid = disk.install('target-global', 'strip-target-record')
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      dry_run = { status = 'verified', output = 'in_memory_only', applied_edits = 2 },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_target_save_record',
+          record_index = 2,
+          record_type = 'GLOB',
+          subrecord_type = 'NAME',
+          subrecord_index = 0,
+          meaning = 'global_variable',
+        },
+      },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('deletes the saved state of a cell the removed content introduced', function()
+    local laid = disk.install('cell-state', 'strip-cell-state')
+    local step = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      dry_run = {
+        status = 'verified',
+        applied_edits = 2,
+        post_mutation_verification = { known_remaining_target_refids = 0 },
+      },
+      planned_operations = {
+        { status = 'planned', name = 'delete_stale_cell_state_for_removed_dependency', count = 1 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_target_save_record',
+          record_index = 2,
+          record_type = 'CSTA',
+          subrecord_type = 'NAME',
+          subrecord_index = 0,
+          meaning = 'saved_cell_state',
+        },
+      },
+    })
+
+    for _, operation in { 'delete_csta_reference_group', 'delete_moved_reference_group' } do
+      local pattern = { planned_edits = { { status = 'planned', operation = operation, record_index = 2 } } }
+      expect(matches(step, pattern)).toBe(false)
+    end
+
+    expect(unchanged(laid)).toBe(true)
+  end)
+end)
+
+suite.describe('writing', function()
+  suite.it('writes the verified save where it is asked to', function()
+    local laid = disk.install('plain', 'strip-output')
+    local output = jess.fs.join(laid.root, 'user-choice.txt')
+    local report = stripOk(laid, { '--output', output }, { 'Morrowind.esm' })
+    expectMatches(report.steps[1], {
+      mode = 'output',
+      dry_run = {
+        requested = false,
+        status = 'verified',
+        output = 'written_to_output',
+        post_mutation_verification = {
+          status = 'verified',
+          known_remaining_target_refids = 0,
+          invalid_content_file_refnums = 0,
+        },
+      },
+      mutation = 'written',
+    })
+    -- The output path is used as given; its extension isn't changed. Nothing was there to back up.
+    expect(report.written).toEqual { path = output }
+    expect(jess.fs.exists(jess.fs.join(laid.root, 'user-choice.omwsave'))).toBe(false)
+    expect(unchanged(laid)).toBe(true)
+    expect(#disk.read(output) < #laid.bytes).toBe(true)
+
+    -- --no-backup replaces what's at the output without a copy.
+    local again = stripOk(laid, { '--output', output, '--no-backup' }, { 'Morrowind.esm' })
+    expect(again.written).toEqual { path = output }
+    expect(jess.fs.exists(output .. '.bak')).toBe(false)
+  end)
+
+  suite.it('rejects an output that is the save', function()
+    local laid = disk.install('plain', 'strip-same-output')
+    local success, _, message = strip(laid, { '--output', laid.save }, { 'Morrowind.esm' }, false)
+    expect(success).toBe(false)
+    expect(message).toContain 'save strip --output must differ from the input'
+    expect(cli.run { 'strip', '--output', laid.save, laid.save, 'Morrowind.esm' }).toBe(9)
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('strips several content files, dependents before their masters', function()
+    local laid = disk.install('several', 'strip-several')
+    local output = jess.fs.join(laid.root, 'several-out')
+
+    -- Masters named first still strip after their dependents.
+    local written = stripOk(laid, { '--output', output }, { 'Library.esm', 'Patch.esp' })
+    expect(written.dependencies).toEqual { 'Patch.esp', 'Library.esm' }
+    expect(written.written.path).toBe(output)
+    for _, step in written.steps do
+      expect(step.mutation_readiness.can_attempt_dry_run).toBe(true)
+    end
+
+    expect(dependenciesOf(output)).toEqual { 'Morrowind.esm', 'Other.esp' }
+
+    local planned = stripOk(laid, { '--dry-run' }, { 'Library.esm', 'Patch.esp' })
+    expect(planned.dependencies).toEqual { 'Patch.esp', 'Library.esm' }
+    expect(planned.steps[1].dependency).toBe 'Patch.esp'
+
+    -- A later step that is blocked comes after what was stripped before it, and nothing further
+    -- is planned.
+    local blocked = stripOk(laid, { '--dry-run' }, { 'Other.esp', 'Morrowind.esm' })
+    expect(#blocked.steps).toBe(2)
+    expect(blocked.steps[1].dependency).toBe 'Other.esp'
+    expectMatches(blocked.steps[2], {
+      dependency = 'Morrowind.esm',
+      dependents = { 'Library.esm' },
+      blockers = { hard = { { kind = 'dependents_require_removed_master' } } },
+      mutation_readiness = { can_attempt_dry_run = false },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('edits the save in place, and keeps every backup', function()
+    local laid = disk.install('projectile-in-place', 'strip-in-place')
+    local backup, secondBackup = laid.save .. '.bak', laid.save .. '.bak1'
+
+    local success, first, message = strip(laid, {}, { 'Bloodmoon.esm' })
+    expect(message).toBe ''
+    expect(success).toBe(true)
+    expect(first.written).toEqual { path = laid.save, backup = backup }
+    expect(disk.read(backup) == laid.bytes).toBe(true)
+    expect(dependenciesOf(laid.save)).toEqual { 'Morrowind.esm', 'Tribunal.esm' }
+
+    success, first, message = strip(laid, {}, { 'Tribunal.esm' })
+    expect(message).toBe ''
+    expect(success).toBe(true)
+    expect(disk.read(backup) == laid.bytes).toBe(true)
+    expect(dependenciesOf(secondBackup)).toEqual { 'Morrowind.esm', 'Tribunal.esm' }
+    expect(dependenciesOf(laid.save)).toEqual { 'Morrowind.esm' }
+
+    -- A blocked strip reports why, fails, and leaves the save and its backups alone: a projectile
+    -- cast by a Morrowind.esm actor has no safe fix.
+    local stripped = disk.read(laid.save)
+    local blocked
+    success, blocked, message = strip(laid, {}, { 'Morrowind.esm' })
+    expect(success).toBe(false)
+    expectMatches(blocked.steps[1], {
+      dependency = 'Morrowind.esm',
+      mutation_readiness = { can_attempt_dry_run = false },
+    })
+    expect(blocked.written).toBe(json.null)
+    expect(message).toContain 'nothing was written'
+    expect(cli.run { 'strip', '--config', laid.config, laid.save, 'Morrowind.esm' }).toBe(1)
+    expect(disk.read(laid.save) == stripped).toBe(true)
+    expect(jess.fs.exists(laid.save .. '.bak2')).toBe(false)
+  end)
+
+  suite.it('keeps the record count exact', function()
+    local bytes = fixtures.save { 'Morrowind.esm', 'Tribunal.esm' }
+      .. record('NPC_', subrecord('NAME', refId 'db_assassin1b'))
+      .. record('GLOB', subrecord('NAME', refId 'DBAttack'))
+    -- Like OpenMW, count every record after TES3.
+    local counted = tes3.open(bytes, { profile = 'omwsave' })
+    counted:updateRecordCount()
+    local before = counted:count()
+    local files = disk.scenario('typed-refids').files
+    local laid = disk.lay('strip-record-count', buffer.tostring(counted:save()), files)
+
+    stripOk(laid, {}, { 'Tribunal.esm' })
+    local stripped = saves.open(laid.save).plugin
+    expect(stripped:count()).toBe(before - 2)
+    expect(stripped:header().recordCount).toBe(stripped:count() - 1)
+  end)
+end)
+
+suite.describe('formats and content files', function()
+  suite.it('reports an older save format as not ready to edit', function()
+    local laid = disk.install('format-36', 'strip-old-format')
+    local report = stripOk(laid, { '--dry-run', '--sample-limit', '20' }, { 'Morrowind.esm' })
+    expectMatches(report.steps[1], {
+      save_format = {
+        format_version = 36,
+        mutation_status = 'unsupported',
+        reason = 'older_save_format_requires_resave_before_mutation',
+      },
+      -- The refusal shows as a blocker too.
+      blockers = { status = 'blocked', hard = { { kind = 'save_format_unsupported' } } },
+      mutation_readiness = { status = 'unknown', reason = 'save_format_unsupported_for_mutation' },
+    })
+  end)
+
+  suite.it('accepts the older formats it has checked, and rejects newer ones', function()
+    local cases = {
+      { version = 37, status = 'supported', reason = 'older_openmw_save_format_with_checked_layout' },
+      {
+        version = fixtures.CurrentFormatVersion,
+        status = 'supported',
+        reason = 'current_openmw_save_format',
+      },
+      {
+        version = fixtures.CurrentFormatVersion + 1,
+        status = 'unsupported',
+        reason = 'newer_save_format_not_understood',
+      },
+    }
+
+    expect(tes3.save.MinMutationFormatVersion).toBe(37)
+    expect(tes3.save.CurrentFormatVersion).toBe(fixtures.CurrentFormatVersion)
+    for _, case in cases do
+      local laid = disk.lay('strip-format-range', fixtures.save(nil, case.version), Base)
+      local _, report = strip(laid, { '--dry-run' }, { 'Morrowind.esm' }, false)
+      local format = report.steps[1].save_format
+      expect(format.mutation_status).toBe(case.status)
+      expect(format.reason).toBe(case.reason)
+    end
+  end)
+
+  suite.it('skips script lists in the load order', function()
+    -- Script lists are plain text; the leading "PLAY" once parsed as a record tag.
+    local laid = disk.install('script-lists', 'strip-omwscripts')
+    for _, dependency in { 'Tribunal.esm', 'Mod.omwscripts' } do
+      local success, _, message = strip(laid, { '--dry-run' }, { dependency })
+      expect(message).toBe ''
+      expect(success).toBe(true)
+    end
+  end)
+
+  suite.it('names a content file it can\'t read, and fails only when that is the one removed', function()
+    -- Broken.esp has a record that declares more payload than the file holds.
+    local laid = disk.install('unreadable', 'strip-unreadable')
+    local success, other, message = strip(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expect(message).toBe ''
+    expect(success).toBe(true)
+    expect(mentions(other, 'could not read dependency')).toBe(true)
+    expect(mentions(other, 'Broken.esp')).toBe(true)
+
+    success, other, message = strip(laid, { '--dry-run' }, { 'Broken.esp' })
+    expect(success).toBe(false)
+    expect(message).toContain 'Broken.esp'
+  end)
+
+  suite.it('blocks removing a master other content needs', function()
+    local laid = disk.install('dependents', 'strip-dependents')
+    local needsMaster = { blockers = { hard = { { kind = 'dependents_require_removed_master' } } } }
+
+    local step = stripOk(laid, { '--dry-run' }, { 'Library.esm' }).steps[1]
+    expectMatches(step, { mutation_readiness = { can_attempt_dry_run = false } })
+    expectMatches(step, needsMaster)
+    expect(step.dependents).toEqual { 'Patch.esp' }
+
+    local patch = stripOk(laid, { '--dry-run' }, { 'Patch.esp' }).steps[1]
+    expect(matches(patch, needsMaster)).toBe(false)
+    expect(patch.dependents).toEqual {}
+  end)
+
+  suite.it('reports where the removed content file was found, and what it defines', function()
+    local laid = disk.install('resolution', 'strip-resolution')
+    local step = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' }).steps[1]
+    expectMatches(step, {
+      target_resolution = { status = 'resolved' },
+      target_records = {
+        total = 2,
+        by_type = { MISC = 1, STAT = 1 },
+        samples = {
+          { type = 'MISC', id = 'target_misc' },
+          { type = 'STAT', id = 'target_static' },
+        },
+      },
+      save_references = { total = 0, confidence = 'known_openmw_refid_fields' },
+      blockers = { status = 'no_known_blockers' },
+      planned_operations = {
+        { status = 'planned', name = 'remove_dependency_from_save_depe', count = 1 },
+        {
+          status = 'planned',
+          name = 'delete_csta_reference_groups_for_removed_dependency',
+          count = 1,
+        },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_csta_reference_group',
+          record_index = 2,
+          record_type = 'CSTA',
+          subrecord_type = 'NAME',
+          subrecord_index = 0,
+          subrecord_end_index = 3,
+          meaning = 'cell_ref_base_object',
+        },
+      },
+      mutation_readiness = { status = 'eligible_for_dry_run', reason = 'planned_edits_available' },
+    })
+    expect(string.sub(step.target_resolution.path, -#'Morrowind.esm')).toBe 'Morrowind.esm'
+
+    -- Without a configuration the target can't be read, but it's the save's only content file,
+    -- so what it defined is everything the save refers to that the save doesn't define itself.
+    local alone = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' }, false)
+    expectMatches(alone.steps[1], {
+      target_resolution = { status = 'disabled' },
+      blockers = { status = 'no_known_blockers' },
+      mutation_readiness = { status = 'eligible_for_dry_run' },
+      dry_run = { status = 'verified' },
+    })
+    expect(alone.steps[1].target_resolution.path).toBeNil()
+    expect(warned(alone, '\'Morrowind.esm\' isn\'t installed')).toBe(true)
+  end)
+end)
+
+suite.describe('save state', function()
+  suite.it('matches OpenMW\'s typed RefIds and script headers', function()
+    local laid = disk.install('typed-refids', 'strip-typed-refids')
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    local function deletion(index: number, tag: string, meaning: string): any
+      return {
+        status = 'planned',
+        operation = 'delete_target_save_record',
+        record_index = index,
+        record_type = tag,
+        subrecord_type = 'NAME',
+        subrecord_index = 0,
+        meaning = meaning,
+      }
+    end
+
+    expectMatches(report.steps[1], {
+      target_records = { total = 3, by_type = { SCPT = 1 } },
+      save_references = { total = 0 },
+      blockers = { status = 'no_known_blockers' },
+      planned_operations = {
+        { status = 'planned', name = 'delete_target_introduced_save_records', count = 3 },
+      },
+      planned_edits = {
+        deletion(2, 'NPC_', 'saved_record_id'),
+        deletion(3, 'GSCR', 'global_script'),
+        deletion(4, 'GLOB', 'global_variable'),
+      },
+    })
+  end)
+
+  suite.it('deletes spell and script state the engine drops', function()
+    local laid = disk.install('spell-state', 'strip-spell-state')
+    local output = jess.fs.join(laid.root, 'spell-state-out')
+    local report = stripOk(laid, { '--output', output }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      save_references = { total = 0 },
+      planned_operations = {
+        {
+          status = 'planned',
+          name = 'delete_stale_spell_and_script_state_for_removed_dependency',
+          count = 4,
+        },
+      },
+      mutation = 'written',
+      dry_run = { post_mutation_verification = { known_remaining_target_refids = 0 } },
+    })
+
+    -- Active-spell ids are generated or built-in, so they are left for the engine to drop.
+    expect(tagsOf(output, 'SPLM')).toEqual { 'SPEL' }
+    expect(tagsOf(output, 'ACTS')).toEqual { 'SPID', 'MGEF' }
+    expect(tagsOf(output, 'GSCR')).toEqual { 'NAME' }
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('classifies what the removed content overrides apart from what it introduced', function()
+    local laid = disk.install('overrides', 'strip-overrides')
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      save_references = {
+        total = 1,
+        by_provenance_role = { overridden_by_target = 1 },
+        by_meaning = { cell_ref_base_object = 1 },
+        samples = {
+          {
+            record_type = 'CSTA',
+            subrecord_type = 'NAME',
+            subrecord_index = 2,
+            ref_id = 'shared_item',
+            meaning = 'cell_ref_base_object',
+            provenance_role = 'overridden_by_target',
+            first_defined_by = 'Morrowind.esm:MISC',
+            last_defined_by = 'Tribunal.esm:MISC',
+          },
+        },
+      },
+      blockers = {
+        status = 'no_known_blockers',
+        informational = { { kind = 'target_overridden_refid_fallbacks', count = 1 } },
+      },
+      planned_operations = {
+        { status = 'planned', name = 'delete_target_introduced_save_records', count = 1 },
+        { status = 'expected', name = 'allow_overridden_refids_to_fallback', count = 1 },
+      },
+    })
+  end)
+
+  suite.it('expects an overridden record to fall back to the copy that remains', function()
+    local shared = record('MISC', subrecord('NAME', 'shared_item'))
+    local files = {
+      ['Morrowind.esm'] = plugins.plugin({ shared }, { { name = 'Master.esm', size = 1 } }),
+      ['Tribunal.esm'] = plugins.plugin({ shared }, { { name = 'Morrowind.esm', size = 1 } }),
+    }
+
+    local bytes = fixtures.save(Two)
+      .. record(
+        'CSTA',
+        subrecord('OBJE', plugins.u32(0))
+          .. subrecord('FRMR', formId(1, -1))
+          .. subrecord('NAME', refId 'shared_item')
+      )
+    local laid = disk.lay('strip-overridden-fallback', bytes, files)
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      save_references = { by_provenance_role = { overridden_by_target = 1 } },
+      blockers = {
+        status = 'no_known_blockers',
+        informational = { { kind = 'target_overridden_refid_fallbacks', count = 1 } },
+      },
+      planned_operations = {
+        { status = 'expected', name = 'allow_overridden_refids_to_fallback', count = 1 },
+      },
+      mutation_readiness = {
+        status = 'eligible_for_dry_run',
+        can_attempt_dry_run = true,
+        reason = 'planned_edits_available',
+      },
+    })
+    expect(mentions(report, 'review_required')).toBe(false)
+  end)
+
+  suite.it('never calls the player\'s record removable', function()
+    local laid = disk.install('player', 'strip-player')
+    local step = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      target_records = { total = 2 },
+      save_references = { total = 0 },
+      planned_operations = {
+        { status = 'planned', name = 'delete_target_introduced_save_records', count = 1 },
+      },
+      blockers = {
+        protected = {
+          {
+            kind = 'player_record',
+            count = 1,
+            action = 'never_remove_or_reclassify_as_dependency_content',
+          },
+        },
+      },
+    })
+
+    local player = {
+      save_references = { samples = { { ref_id = 'player', meaning = 'saved_record_id' } } },
+    }
+
+    expect(matches(step, player)).toBe(false)
+  end)
+
+  suite.it('leaves OpenMW\'s built-in scripts out of what it has to read', function()
+    local laid = disk.install('builtin-scripts', 'strip-builtin')
+    local step = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      save_references = { total = 0 },
+      planned_operations = {
+        { status = 'planned', name = 'delete_target_introduced_save_records', count = 1 },
+      },
+    })
+
+    local unknown = { save_references = { by_provenance_role = { target_only_unknown = 1 } } }
+    expect(matches(step, unknown)).toBe(false)
+  end)
+
+  suite.it('deletes an inventory item of the removed content', function()
+    local laid = disk.install('inventory', 'strip-inventory')
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      save_references = { total = 0 },
+      planned_operations = {
+        { status = 'planned', name = 'delete_inventory_items_for_removed_dependency', count = 1 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_inventory_item_group',
+          record_index = 2,
+          record_type = 'PLAY',
+          subrecord_type = 'NAME',
+          subrecord_index = 1,
+          subrecord_end_index = 3,
+          meaning = 'inventory_item_base_object',
+        },
+      },
+      dry_run = { status = 'verified' },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('keeps an inventory item\'s group clear of the reference after it', function()
+    local laid = disk.install('inventory-before-reference', 'strip-inventory-reference')
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_inventory_item_group',
+          record_index = 2,
+          record_type = 'CSTA',
+          subrecord_type = 'NAME',
+          subrecord_index = 4,
+          subrecord_end_index = 6,
+          meaning = 'inventory_item_base_object',
+        },
+        {
+          status = 'planned',
+          operation = 'delete_csta_reference_group',
+          record_index = 2,
+          record_type = 'CSTA',
+          subrecord_type = 'NAME',
+          subrecord_index = 6,
+          subrecord_end_index = 9,
+          meaning = 'cell_ref_base_object',
+        },
+      },
+      dry_run = { status = 'verified' },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('deletes stolen items and markers of the removed content', function()
+    local laid = disk.install('stolen-and-markers', 'strip-stolen')
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      save_references = { total = 0 },
+      planned_operations = {
+        { status = 'planned', name = 'delete_stolen_items_for_removed_dependency', count = 1 },
+        { status = 'planned', name = 'delete_target_introduced_save_records', count = 1 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_stolen_item_group',
+          record_index = 2,
+          record_type = 'STLN',
+          subrecord_type = 'NAME',
+          subrecord_index = 0,
+          subrecord_end_index = 3,
+          meaning = 'stolen_item_ref_id',
+        },
+        {
+          status = 'planned',
+          operation = 'delete_target_save_record',
+          record_index = 3,
+          record_type = 'MARK',
+          subrecord_type = 'NAME',
+          subrecord_index = 2,
+          meaning = 'custom_marker_cell',
+        },
+      },
+      dry_run = { status = 'verified' },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('blocks on state that has no safe fix', function()
+    -- A key-only lock (level 0, saved as the largest i32) would become impossible to open.
+    local laid = disk.install('unfixable', 'strip-unfixable')
+    local report = stripOk(laid, { '--dry-run', '--sample-limit', '20' }, { 'Tribunal.esm' })
+    local function sample(tag: string, sub: string, index: number, id: string, meaning: string): any
+      return {
+        record_type = tag,
+        subrecord_type = sub,
+        subrecord_index = index,
+        ref_id = id,
+        meaning = meaning,
+        provenance_role = 'introduced_by_target',
+      }
+    end
+
+    expectMatches(report.steps[1], {
+      save_references = {
+        samples = {
+          sample('CSTA', 'DNAM', 4, 'target_cell', 'cell_ref_destination_cell'),
+          sample('CSTA', 'KNAM', 6, 'target_key', 'cell_ref_key'),
+          sample('PLAY', 'SIGN', 0, 'target_sign', 'player_birthsign'),
+        },
+      },
+      blockers = { hard = { { kind = 'target_introduced_ref_ids', count = 3 } } },
+      mutation_readiness = { status = 'blocked' },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('clears the object fields and AI packages the engine would keep broken', function()
+    local laid = disk.install('fixable', 'strip-fixable')
+    local output = jess.fs.join(laid.root, 'fixable-out')
+    local report =
+      stripOk(laid, { '--sample-limit', '20', '--output', output }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      mutation = 'written',
+      planned_operations = {
+        { status = 'planned', name = 'clear_object_fields_for_removed_dependency', count = 5 },
+        { status = 'planned', name = 'delete_ai_packages_for_removed_dependency', count = 2 },
+      },
+      dry_run = { post_mutation_verification = { known_remaining_target_refids = 0 } },
+    })
+
+    -- The object, its pickable lock level and the unrelated Wander package survive.
+    expect(tagsOf(output, 'CSTA')).toEqual {
+      'NAME',
+      'OBJE',
+      'FRMR',
+      'NAME',
+      'FLTV',
+      'AIPK',
+      'DATA',
+      'LAST',
+    }
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('renumbers equipment after removing inventory items', function()
+    local laid = disk.install('equipment', 'strip-equipment')
+    local output = jess.fs.join(laid.root, 'equipment-out')
+    stripOk(laid, { '--output', output }, { 'Tribunal.esm' })
+    local plugin = saves.open(output).plugin
+    local play = plugin:count() - 1
+    expect(plugin:tag(play)).toBe 'PLAY'
+    local function words(tag: string): { number }
+      local source, at, size = plugin:findSubrecord(play, tes3.tags.code(tag))
+      local out = {}
+      for offset = 0, size - 4, 4 do
+        table.insert(out, buffer.readu32(source :: buffer, at + offset))
+      end
+
+      return out
+    end
+
+    expect(words 'ICNT').toEqual { 2 }
+    -- The ring's equipment is gone and the boots move from item 2 to item 1, keeping their slot.
+    expect(words 'EQIP').toEqual { 2, 0, 1, 1, 5 }
+    expect(words 'SELE').toEqual { 1 }
+  end)
+end)
+
+suite.describe('references by content file', function()
+  suite.it('reports and fixes references into the removed content file', function()
+    local laid = disk.install('content-file-refnums', 'strip-refnums')
+    local step = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      content_file_references = {
+        total = 2,
+        confidence = 'known_openmw_formid_and_lua_refnum_fields',
+        by_meaning = { object_refnum = 1, moved_refnum = 1 },
+        samples = {
+          {
+            record_type = 'CSTA',
+            subrecord_type = 'FRMR',
+            subrecord_index = 1,
+            meaning = 'object_refnum',
+            content_file_index = 1,
+            local_index = 42,
+            dependency = 'Tribunal.esm',
+          },
+          {
+            record_type = 'CSTA',
+            subrecord_type = 'MVRF',
+            subrecord_index = 3,
+            meaning = 'moved_refnum',
+            content_file_index = 1,
+            local_index = 77,
+            dependency = 'Tribunal.esm',
+          },
+        },
+      },
+      blockers = { status = 'no_known_blockers' },
+      planned_operations = {
+        { status = 'planned', name = 'remove_dependency_from_tes3_mast', count = 1 },
+        {
+          status = 'planned',
+          name = 'remap_content_file_indices_after_removed_dependency',
+          count = 1,
+        },
+        {
+          status = 'planned',
+          name = 'delete_csta_reference_groups_for_removed_dependency',
+          count = 1,
+        },
+        { status = 'planned', name = 'delete_moved_references_for_removed_dependency', count = 1 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'remove_tes3_master_dependency',
+          record_index = 0,
+          record_type = 'TES3',
+          subrecord_type = 'MAST',
+          subrecord_index = 4,
+          subrecord_end_index = 6,
+          old_content_file_index = 1,
+        },
+        {
+          status = 'planned',
+          operation = 'delete_csta_reference_group',
+          record_index = 2,
+          record_type = 'CSTA',
+          subrecord_type = 'NAME',
+          subrecord_index = 0,
+          subrecord_end_index = 3,
+          meaning = 'cell_ref_base_object',
+        },
+        {
+          status = 'planned',
+          operation = 'delete_moved_reference_group',
+          record_index = 2,
+          record_type = 'CSTA',
+          subrecord_type = 'MVRF',
+          subrecord_index = 3,
+          subrecord_end_index = 5,
+          meaning = 'moved_refnum',
+          old_content_file_index = 1,
+        },
+        {
+          status = 'planned',
+          operation = 'remap_content_file_index',
+          record_index = 3,
+          record_type = 'PROJ',
+          subrecord_type = 'ACTO',
+          subrecord_index = 1,
+          meaning = 'projectile_caster_refnum',
+          old_content_file_index = 2,
+          new_content_file_index = 1,
+        },
+      },
+      mutation_readiness = { status = 'eligible_for_dry_run', reason = 'planned_edits_available' },
+      dry_run = { status = 'verified', post_mutation_verification = { status = 'verified' } },
+    })
+    expect(#step.planned_edits).toBe(5)
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('classifies references in serialized Lua data', function()
+    local bytes = fixtures.save(Two)
+      .. record(
+        'LUAM',
+        subrecord('FRMR', formId(41, 1)) .. subrecord('LUAD', fixtures.luaObject(42, 1))
+      )
+    local laid = disk.lay('strip-lua-refnums', bytes, TwoFiles)
+    local step = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' }).steps[1]
+    local function sample(sub: string, index: number, meaning: string, localIndex: number): any
+      return {
+        record_type = 'LUAM',
+        subrecord_type = sub,
+        subrecord_index = index,
+        meaning = meaning,
+        content_file_index = 1,
+        local_index = localIndex,
+        dependency = 'Tribunal.esm',
+      }
+    end
+
+    expectMatches(step, {
+      content_file_references = {
+        by_meaning = { lua_refnum = 1, lua_serialized_refnum = 1 },
+        samples = {
+          sample('FRMR', 0, 'lua_refnum', 41),
+          sample('LUAD', 1, 'lua_serialized_refnum', 42),
+        },
+      },
+    })
+    expect(step.reference_coverage.unclassified_risky_records).toEqual {}
+  end)
+
+  suite.it('renumbers references in serialized Lua data past the removed content file', function()
+    local bytes = fixtures.save(Three)
+      .. record('LUAM', subrecord('LUAD', fixtures.luaObjectList { { 7, 0 }, { 8, 2 }, { 9, 2 } }))
+    local laid = disk.lay('strip-lua-remap', bytes, ThreeFiles)
+    local output = jess.fs.join(laid.root, 'lua-remap-output.omwsave')
+    local report = stripOk(laid, { '--output', output }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      planned_operations = {
+        {
+          status = 'planned',
+          name = 'remap_content_file_indices_after_removed_dependency',
+          count = 1,
+        },
+        {
+          status = 'planned',
+          name = 'remap_lua_serialized_refnums_after_removed_dependency',
+          count = 2,
+        },
+      },
+      dry_run = { post_mutation_verification = { status = 'verified' } },
+    })
+
+    local plugin = saves.open(output).plugin
+    local luam = plugin:count() - 1
+    expect(plugin:tag(luam)).toBe 'LUAM'
+    local source, at, size = plugin:findSubrecord(luam, tes3.tags.code 'LUAD')
+    local data = tes3.save.decodeLuaData(source :: buffer, at, size)
+    expect(tes3.save.luaRefs(data)).toEqual {
+      { index = 7, contentFile = 0 },
+      { index = 8, contentFile = 1 },
+      { index = 9, contentFile = 1 },
+    }
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('blocks on serialized Lua data that refers to the removed content file', function()
+    local bytes = fixtures.save(Two) .. record('LUAM', subrecord('LUAD', fixtures.luaObject(8, 1)))
+    local laid = disk.lay('strip-lua-blocked', bytes, TwoFiles)
+    local report = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      blockers = { status = 'blocked' },
+      planned_operations = {
+        {
+          status = 'blocked',
+          name = 'rewrite_or_drop_lua_references_to_removed_dependency',
+          count = 1,
+        },
+      },
+      planned_edits = {
+        {
+          status = 'blocked',
+          operation = 'rewrite_or_drop_removed_lua_reference',
+          record_index = 2,
+          record_type = 'LUAM',
+          subrecord_type = 'LUAD',
+          subrecord_index = 0,
+          meaning = 'lua_serialized_refnum',
+          old_content_file_index = 1,
+        },
+      },
+      mutation_readiness = { status = 'blocked', reason = 'blocked_planned_edits_present' },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('says which records it can\'t classify: Lua data that doesn\'t decode', function()
+    local undecodable = record('LUAM', subrecord('LUAD', '\1'))
+    local laid = disk.lay('strip-risky', fixtures.save() .. undecodable .. undecodable, Base)
+    local report = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' })
+    expectMatches(report.steps[1], {
+      reference_coverage = { status = 'blocked_by_unclassified_lua' },
+      mutation_readiness = { status = 'unknown', reason = 'unclassified_risky_records_present' },
+    })
+    expect(report.steps[1].reference_coverage.unclassified_risky_records).toEqual { LUAM = 2 }
+    expect(warned(report, 'some LUAD payloads could not be decoded')).toBe(true)
+  end)
+
+  suite.it('says which records it can\'t classify: Lua userdata it doesn\'t know', function()
+    local bytes = fixtures.save()
+      .. record('LUAM', subrecord('LUAD', fixtures.luaCustom('x', '\1\2\3')))
+    local laid = disk.lay('strip-unknown-userdata', bytes, Base)
+    local report = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' })
+    expectMatches(report.steps[1], {
+      reference_coverage = { status = 'blocked_by_unclassified_lua' },
+      mutation_readiness = { status = 'unknown', reason = 'unclassified_risky_records_present' },
+    })
+    expect(report.steps[1].reference_coverage.unclassified_risky_records).toEqual { LUAM = 1 }
+    expect(
+      warned(report, 'some LUAD payloads could not be decoded or contain unknown userdata')
+    ).toBe(true)
+  end)
+
+  suite.it('classifies a projectile\'s ids and references', function()
+    local laid = disk.install('projectiles', 'strip-projectiles')
+    local step = stripOk(laid, { '--dry-run' }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      save_references = { total = 0 },
+      content_file_references = {
+        total = 3,
+        by_meaning = { projectile_caster_refnum = 2, magic_projectile_item_refnum = 1 },
+        samples = {
+          {
+            record_type = 'PROJ',
+            subrecord_type = 'ACTO',
+            subrecord_index = 1,
+            meaning = 'projectile_caster_refnum',
+            content_file_index = 1,
+            local_index = 100,
+            dependency = 'Tribunal.esm',
+          },
+          {
+            record_type = 'MPRJ',
+            subrecord_type = 'ITEM',
+            subrecord_index = 3,
+            meaning = 'magic_projectile_item_refnum',
+            content_file_index = 1,
+            local_index = 102,
+            dependency = 'Tribunal.esm',
+          },
+        },
+      },
+      planned_operations = {
+        { status = 'planned', name = 'delete_target_introduced_save_records', count = 2 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'delete_target_save_record',
+          record_index = 2,
+          record_type = 'PROJ',
+          subrecord_type = 'ID__',
+          subrecord_index = 0,
+          meaning = 'projectile_base_object',
+        },
+        {
+          status = 'planned',
+          operation = 'delete_target_save_record',
+          record_index = 3,
+          record_type = 'MPRJ',
+          subrecord_type = 'ID__',
+          subrecord_index = 0,
+          meaning = 'magic_projectile_base_object',
+        },
+      },
+    })
+    expect(step.reference_coverage.unclassified_risky_records).toEqual {}
+  end)
+
+  suite.it('classifies the references scripts, spells, creatures, and AI hold', function()
+    local function pair(tag: string, index: number): string
+      return subrecord(tag, formId(index, 1)) .. subrecord(tag, formId(index + 1, 2))
+    end
+
+    local bytes = fixtures.save(Three)
+      .. record('GSCR', pair('FRMR', 10))
+      .. record('ACTS', pair('CAST', 20) .. pair('ITEM', 30) .. pair('SUM_', 40))
+      .. record('CREA', pair('ACID', 50) .. pair('SPAW', 60))
+      .. record('AI__', pair('TAID', 70) .. subrecord('AIPK', 'COMB') .. pair('TARG', 80))
+    local laid = disk.lay('strip-source-backed', bytes, ThreeFiles)
+    local step =
+      stripOk(laid, { '--dry-run', '--sample-limit', '20' }, { 'Tribunal.esm' }).steps[1]
+    local function sample(tag: string, sub: string, index: number, meaning: string, localIndex: number): any
+      return {
+        record_type = tag,
+        subrecord_type = sub,
+        subrecord_index = index,
+        meaning = meaning,
+        content_file_index = 1,
+        local_index = localIndex,
+        dependency = 'Tribunal.esm',
+      }
+    end
+
+    local spawned = sample('CREA', 'SPAW', 2, 'creature_spawned_actor_refnum', 60)
+    spawned.record_index = 4
+    expectMatches(step, {
+      content_file_references = {
+        total = 8,
+        by_meaning = {
+          global_script_target_refnum = 1,
+          active_spell_caster_refnum = 1,
+          active_spell_item_refnum = 1,
+          active_spell_summon_refnum = 1,
+          creature_summon_actor_refnum = 1,
+          creature_spawned_actor_refnum = 1,
+          ai_target_actor_refnum = 1,
+          ai_target_refnum = 1,
+        },
+        samples = {
+          sample('GSCR', 'FRMR', 0, 'global_script_target_refnum', 10),
+          sample('ACTS', 'CAST', 0, 'active_spell_caster_refnum', 20),
+          sample('ACTS', 'ITEM', 2, 'active_spell_item_refnum', 30),
+          sample('ACTS', 'SUM_', 4, 'active_spell_summon_refnum', 40),
+          sample('CREA', 'ACID', 0, 'creature_summon_actor_refnum', 50),
+          spawned,
+          sample('AI__', 'TAID', 0, 'ai_target_actor_refnum', 70),
+          sample('AI__', 'TARG', 3, 'ai_target_refnum', 80),
+        },
+      },
+      planned_operations = {
+        { status = 'blocked', name = 'rewrite_or_drop_content_file_refnum_references', count = 8 },
+      },
+      planned_edits = {
+        {
+          status = 'planned',
+          operation = 'remap_content_file_index',
+          record_index = 2,
+          record_type = 'GSCR',
+          subrecord_type = 'FRMR',
+          subrecord_index = 1,
+          meaning = 'global_script_target_refnum',
+          old_content_file_index = 2,
+          new_content_file_index = 1,
+        },
+      },
+      mutation_readiness = { status = 'blocked', reason = 'blocked_planned_edits_present' },
+    })
+    expect(#step.planned_edits).toBe(17)
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('never reads an id as a reference by content file', function()
+    -- A typed RefId (type 2, unsized string) for a 7-character id is exactly 8 bytes, the size
+    -- of a FormId.
+    local fargoth = refId 'fargoth'
+    local bytes = fixtures.save(Three)
+      .. record(
+        'CREA',
+        table.concat {
+          subrecord('AIPK', 'ESCO'),
+          subrecord('TARG', fargoth),
+          subrecord('TAID', formId(70, 2)),
+          subrecord('AIPK', 'ACTI'),
+          subrecord('TARG', fargoth),
+          subrecord('AIPK', 'PURS'),
+          subrecord('TARG', formId(80, 2)),
+        }
+      )
+      .. record('GSCR', subrecord('NAME', refId 'main') .. subrecord('TARG', fargoth))
+    local laid = disk.lay('strip-refid-targets', bytes, ThreeFiles)
+    local report = stripOk(laid, { '--dry-run', '--sample-limit', '20' }, { 'Tribunal.esm' })
+    local found = locations(report.steps[1])
+    local function at(location: string): boolean return table.find(found, location) ~= nil end
+
+    -- Only the Pursue TARG and the TAID are RefNums; both shift from Bloodmoon (2) to 1.
+    expect(at 'CREA TAID 2').toBe(true)
+    expect(at 'CREA TARG 6').toBe(true)
+    expect(at 'CREA TARG 1').toBe(false)
+    expect(at 'CREA TARG 4').toBe(false)
+    for _, location in found do
+      expect(string.sub(location, 1, 9) == 'GSCR TARG').toBe(false)
+    end
+
+    expect(unchanged(laid)).toBe(true)
+  end)
+end)
+
+suite.describe('content that is no longer installed', function()
+  suite.it('removes a content file that is no longer installed', function()
+    -- The save's second CSTA holds an object Tribunal.esm placed, found by its content file
+    -- index alone.
+    local laid = disk.install('uninstalled', 'strip-uninstalled')
+    local report = stripOk(laid, { '--sample-limit', '20' }, { 'Tribunal.esm' })
+    expectMatches(report.steps[1], {
+      target_resolution = { status = 'missing' },
+      blockers = { status = 'no_known_blockers' },
+      mutation = 'written',
+      planned_operations = {
+        { status = 'planned', name = 'clear_object_fields_for_removed_dependency', count = 5 },
+        { status = 'planned', name = 'delete_ai_packages_for_removed_dependency', count = 2 },
+        {
+          status = 'planned',
+          name = 'delete_csta_reference_groups_for_removed_dependency',
+          count = 1,
+        },
+      },
+      dry_run = {
+        post_mutation_verification = {
+          known_remaining_target_refids = 0,
+          invalid_content_file_refnums = 0,
+        },
+      },
+    })
+    expect(report.steps[1].blockers.hard).toEqual {}
+    expect(warned(report, '\'Tribunal.esm\' isn\'t installed')).toBe(true)
+    expect(report.written.backup).toBe(laid.save .. '.bak')
+
+    expect(dependenciesOf(laid.save)).toEqual { 'Morrowind.esm' }
+    local plugin = saves.open(laid.save).plugin
+    local cells = {}
+    for index = 0, plugin:count() - 1 do
+      if plugin:tag(index) ~= 'CSTA' then continue end
+
+      local tags = {}
+      for _, sub in plugin:subrecords(index) do
+        table.insert(tags, sub.tag)
+      end
+
+      table.insert(cells, tags)
+    end
+
+    -- The chest keeps what doesn't need Tribunal; the object Tribunal placed is gone.
+    expect(cells).toEqual {
+      { 'NAME', 'OBJE', 'FRMR', 'NAME', 'FLTV', 'AIPK', 'DATA', 'LAST' },
+      { 'NAME' },
+    }
+  end)
+
+  suite.it('still blocks what it can\'t fix of a content file that is no longer installed', function()
+    local laid = disk.install('uninstalled-blocked', 'strip-uninstalled-blocked')
+    local success, report, message = strip(laid, {}, { 'Tribunal.esm' })
+    expect(success).toBe(false)
+    expect(message).toContain 'nothing was written'
+    expectMatches(report.steps[1], {
+      save_references = {
+        samples = {
+          {
+            ref_id = 'target_sign',
+            meaning = 'player_birthsign',
+            provenance_role = 'introduced_by_target',
+            first_defined_by = 'Tribunal.esm',
+          },
+        },
+      },
+      blockers = {
+        status = 'blocked',
+        hard = { { kind = 'target_introduced_ref_ids', count = 1 } },
+      },
+      mutation_readiness = { status = 'blocked' },
+    })
+    expect(report.written).toBe(json.null)
+    expect(unchanged(laid)).toBe(true)
+
+    -- Without the configuration, what the remaining content defines can't be known: a blocker
+    -- says so.
+    success, report = strip(laid, {}, { 'Tribunal.esm' }, false)
+    expect(success).toBe(false)
+    expectMatches(report.steps[1], {
+      target_resolution = { status = 'disabled' },
+      blockers = {
+        status = 'blocked',
+        hard = { { kind = 'target_ref_ids_with_incomplete_prior_provenance', count = 1 } },
+      },
+    })
+
+    -- Stripping Morrowind.esm too leaves nothing else to define it, so only the birthsign blocks.
+    local _, both = strip(laid, { '--dry-run' }, { 'Tribunal.esm', 'Morrowind.esm' }, false)
+    expectMatches(both.steps[1], {
+      blockers = { hard = { { kind = 'target_introduced_ref_ids', count = 1 } } },
+    })
+    expect(unchanged(laid)).toBe(true)
+  end)
+end)
+
+suite.describe('samples and code pages', function()
+  suite.it('lists no more example records than --sample-limit says', function()
+    local laid =
+      disk.lay('strip-sample-limit', fixtures.save(), disk.scenario('resolution').files)
+    local request =
+      cli.parse { 'strip', '--format', 'json', '--dry-run', '--sample-limit', '1', '--config', laid.config, laid.save, 'Morrowind.esm' }
+    assert(request and request.command == 'strip')
+    local document = cli.render(commands.strip(request.request), { format = request.format })
+    expect(document).toContain '"samples":'
+    expect(document).toContain '"id":"target_misc"'
+    expect(string.find(document, '"id":"target_static"', 1, true)).toBeNil()
+  end)
+
+  suite.it('reads content files in the configuration\'s code page', function()
+    -- "Аист" in Windows-1251; Windows-1252 reads it as "Àèñò".
+    local files = disk.scenario('encoding-win1251').files
+    local function samples(lines: string): any
+      local laid = disk.lay('strip-encoding', fixtures.save(), files, lines)
+      return stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' }).steps[1].target_records.samples
+    end
+
+    expect(samples 'encoding=win1251\n').toEqual { { type = 'BSGN', id = 'Аист' } }
+    expect(samples '').toEqual { { type = 'BSGN', id = 'Àèñò' } }
+  end)
+end)
+
+return suite
