@@ -296,11 +296,14 @@ export type DumpRequest = Input & {
   backup: boolean?,
   --- With `rawOutput`, say what would be written and write nothing.
   dryRun: boolean?,
-  --- A dump in pages, for a save too big to hold all at once as values: at most `limit` of the
-  --- selected records, looked for from record `from` (0 without one). The result's `next` is the
-  --- `from` of the page after it.
+  --- A dump in pages, for a save too big to hold all at once as values: the selected records
+  --- from record `from` (0 without one) on, until there are `limit` of them or their bytes in
+  --- the save come to `byteLimit`, whichever is first. A record's value is a few times its bytes,
+  --- so a budget of bytes bounds a page where a count can't; a record bigger than the budget is a
+  --- page of its own. The result's `next` is the `from` of the page after it.
   from: number?,
   limit: number?,
+  byteLimit: number?,
 }
 
 export type Listed = { record: number, type: string, id: string? }
@@ -376,11 +379,16 @@ end
 
 local CellTag = tes3.tags.code 'CELL'
 
+--- A record's header: its tag, its size, and its flags.
+local RecordHeader = 16
+
 local function dump(request: DumpRequest): DumpResult
   local path = request.path
-  local inPages = request.limit ~= nil and not request.rawOutput
-  local limit = request.limit
-  if limit and limit < 1 then error('a page of a dump holds at least one record', 0) end
+  local limit, byteLimit = request.limit, request.byteLimit
+  local inPages = (limit ~= nil or byteLimit ~= nil) and not request.rawOutput
+  if (limit and limit < 1) or (byteLimit and byteLimit < 1) then
+    error('a page of a dump holds at least one record', 0)
+  end
 
   local kept = if inPages then openPaged(request) else nil
   local save = if kept then kept.save else open(request)
@@ -410,13 +418,17 @@ local function dump(request: DumpRequest): DumpResult
   -- narrow a layout or an extraction, and say nothing here, as jess-save's dump had it.
   local indices: { number } = {}
   local next: number? = nil
+  local bytes = 0
   for index = request.from or 0, plugin:count() - 1 do
-    if limit and #indices == limit then
+    if (limit and #indices == limit) or (byteLimit and #indices > 0 and bytes >= byteLimit) then
       next = index
       break
     end
 
-    if Select.matchesRecord(selector, plugin, index) then table.insert(indices, index) end
+    if Select.matchesRecord(selector, plugin, index) then
+      table.insert(indices, index)
+      bytes += RecordHeader + plugin:size(index)
+    end
   end
 
   if not next then paged = nil end

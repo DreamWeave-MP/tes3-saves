@@ -609,9 +609,12 @@ local function reason(problem: unknown): string
   return string.match(message, '^[^\n]-%.luau:%d+: (.*)$') or message
 end
 
---- How many records a dump asks for at a time. A save's records are printed as they are read,
---- as jess printed them, so a long save is never held whole as values.
+--- How much of a save a dump asks for at a time: so many records, or fewer when their bytes in
+--- the save come to the budget first, since a record's value is a few times its bytes and a
+--- save's cell records are big. A save's records are printed as they are read, as jess printed
+--- them, so what a dump holds is the save and one page, however long the save.
 local PageSize = 256
+local PageBytes = 64 * 1024
 
 --- The command `request` names, carried out; for a dump, the page that starts at record `from`.
 local function execute(request: Request, from: number?): Commands.Result?
@@ -638,7 +641,7 @@ local function execute(request: Request, from: number?): Commands.Result?
     end
 
     local page = table.clone(request.request)
-    page.from, page.limit = from, PageSize
+    page.from, page.limit, page.byteLimit = from, PageSize, PageBytes
     return Commands.dump(page)
   end
 
@@ -695,6 +698,10 @@ local function run(argv: { string }): number
 
     -- A page that gave no record wrote nothing, and the document is still to be started.
     continued = continued or document ~= ''
+    -- The page's values and text are garbage now, and Luau's collector only starts once the heap
+    -- has grown by as much again, which over a long save is many pages; collecting here keeps
+    -- what a dump holds to the save and one page.
+    jess.bench.collect()
   end
 end
 
