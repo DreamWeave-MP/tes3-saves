@@ -83,15 +83,6 @@ end
 
 local function named(tag: string, id: string): string return record(tag, subrecord('NAME', id)) end
 
-export type Operation = {
-  kind: 'check' | 'strip',
-  dependencies: { string }?,
-  mode: ('dryRun' | 'inMemory')?,
-  sampleLimit: number?,
-  --- Without the scenario's config.
-  noConfig: boolean?,
-}
-
 export type Scenario = {
   name: string,
   save: string,
@@ -99,28 +90,7 @@ export type Scenario = {
   files: { [string]: string },
   --- More openmw.cfg lines after `data=`.
   config: string?,
-  operations: { Operation },
 }
-
-local function strips(dependencies: { string }, extra: { Operation }?): { Operation }
-  local out: { Operation } =
-    { { kind = 'check' } :: Operation, { kind = 'check', noConfig = true } :: Operation }
-  for _, dependency in dependencies do
-    out[#out + 1] = { kind = 'strip', dependencies = { dependency }, mode = 'dryRun' } :: Operation
-    out[#out + 1] = {
-      kind = 'strip',
-      dependencies = { dependency },
-      mode = 'inMemory',
-      sampleLimit = 20,
-    } :: Operation
-  end
-
-  for _, operation in extra or {} do
-    table.insert(out, operation)
-  end
-
-  return out
-end
 
 local function keptBroken(): { [string]: string }
   return {
@@ -183,23 +153,21 @@ local function scenarios(): { Scenario }
     name: string,
     bytes: string,
     files: { [string]: string },
-    operations: { Operation },
     config: string?
   )
     table.insert(
       list,
-      { name = name, save = bytes, files = files, operations = operations, config = config }
+      { name = name, save = bytes, files = files, config = config }
     )
   end
 
-  add('plain', save(), base, strips { 'Morrowind.esm' })
+  add('plain', save(), base)
   add(
     'target-global',
     save(two) .. record('GLOB', subrecord('NAME', refId 'DBAttack')),
     withTribunal {
       named('GLOB', 'DBAttack'),
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   add('cell-state', save(two) .. record(
     'CSTA',
@@ -215,9 +183,9 @@ local function scenarios(): { Scenario }
       subrecord('MVRF', formId(77, 1)),
       subrecord('NAME', refId 'target_cell'),
     }
-  ), withTribunal { named('CELL', 'target_cell') }, strips { 'Tribunal.esm' })
+  ), withTribunal { named('CELL', 'target_cell') })
   for _, version in { 36, 37, CurrentFormatVersion + 1 } do
-    add(`format-{version}`, save(nil, version), base, strips { 'Morrowind.esm' })
+    add(`format-{version}`, save(nil, version), base)
   end
 
   add(
@@ -227,15 +195,14 @@ local function scenarios(): { Scenario }
       ['Morrowind.esm'] = contentPlugin 'Master.esm',
       ['Mod.omwscripts'] = 'PLAYER: scripts/mod/player.lua\n',
       ['Tribunal.esm'] = contentPlugin 'Morrowind.esm',
-    },
-    strips { 'Tribunal.esm', 'Mod.omwscripts' }
+    }
   )
   local broken = record('TES3', plugins.hedr(1)) .. 'STAT' .. u32(100) .. string.rep('\0', 8)
   add('unreadable', save { 'Morrowind.esm', 'Tribunal.esm', 'Broken.esp' }, {
     ['Morrowind.esm'] = contentPlugin 'Master.esm',
     ['Tribunal.esm'] = contentPlugin 'Morrowind.esm',
     ['Broken.esp'] = broken,
-  }, strips { 'Tribunal.esm', 'Broken.esp' })
+  })
 
   local library = {
     ['Morrowind.esm'] = contentPlugin 'Master.esm',
@@ -247,20 +214,12 @@ local function scenarios(): { Scenario }
   add(
     'dependents',
     save(four),
-    library,
-    strips({ 'Library.esm', 'Patch.esp' }, {
-      { kind = 'strip', dependencies = { 'Library.esm', 'Patch.esp' }, mode = 'inMemory' },
-      { kind = 'strip', dependencies = { 'Library.esm', 'Patch.esp' }, mode = 'dryRun' },
-    })
+    library
   )
   add(
     'several',
     save(four, nil, true),
-    library,
-    strips({}, {
-      { kind = 'strip', dependencies = { 'Library.esm', 'Patch.esp' }, mode = 'inMemory' },
-      { kind = 'strip', dependencies = { 'Other.esp', 'Morrowind.esm' }, mode = 'dryRun' },
-    })
+    library
   )
   add(
     'projectile-in-place',
@@ -269,8 +228,7 @@ local function scenarios(): { Scenario }
       ['Morrowind.esm'] = contentPlugin 'Master.esm',
       ['Tribunal.esm'] = contentPlugin 'Morrowind.esm',
       ['Bloodmoon.esm'] = contentPlugin 'Morrowind.esm',
-    },
-    strips { 'Bloodmoon.esm', 'Tribunal.esm', 'Morrowind.esm' }
+    }
   )
   local csta = record(
     'CSTA',
@@ -286,12 +244,7 @@ local function scenarios(): { Scenario }
         'Master.esm',
         { named('STAT', 'target_static'), named('MISC', 'target_misc') }
       ),
-    },
-
-    strips({ 'Morrowind.esm' }, {
-      { kind = 'strip', dependencies = { 'Morrowind.esm' }, mode = 'dryRun', noConfig = true },
-      { kind = 'strip', dependencies = { 'Morrowind.esm' }, mode = 'dryRun', sampleLimit = 1 },
-    })
+    }
   )
   add(
     'typed-refids',
@@ -306,8 +259,7 @@ local function scenarios(): { Scenario }
         subrecord('SCHD', plugins.fixed('dbattackScript', 32) .. string.rep('\0', 20))
       ),
       named('GLOB', 'DBAttack'),
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   add(
     'spell-state',
@@ -337,8 +289,7 @@ local function scenarios(): { Scenario }
       named('SPEL', 'target_active'),
       named('MGEF', 'target_effect'),
       named('NPC_', 'target_npc'),
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   add(
     'overrides',
@@ -351,8 +302,7 @@ local function scenarios(): { Scenario }
         'Morrowind.esm',
         { named('MISC', 'shared_item'), named('NPC_', 'db_assassin1b') }
       ),
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   add(
     'risky-lua',
@@ -360,8 +310,7 @@ local function scenarios(): { Scenario }
       .. record('LUAM', subrecord('LUAD', '\1'))
       .. record('LUAM', subrecord('LUAD', '\1'))
       .. record('LUAM', subrecord('LUAD', luaCustom('x', '\1\2\3'))),
-    base,
-    strips { 'Morrowind.esm' }
+    base
   )
   add(
     'player',
@@ -374,15 +323,13 @@ local function scenarios(): { Scenario }
         'Morrowind.esm',
         { named('NPC_', 'player'), named('NPC_', 'db_assassin1b') }
       ),
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   add(
     'builtin-scripts',
     save { 'builtin.omwscripts', 'Morrowind.esm', 'Tribunal.esm' }
       .. record('NPC_', subrecord('NAME', refId 'db_assassin1b')),
-    withTribunal { named('NPC_', 'db_assassin1b') },
-    strips { 'Tribunal.esm' }
+    withTribunal { named('NPC_', 'db_assassin1b') }
   )
   add(
     'inventory',
@@ -393,8 +340,7 @@ local function scenarios(): { Scenario }
           .. subrecord('FRMR', formId(1, -1))
           .. subrecord('NAME', refId 'target_misc')
       ),
-    withTribunal { named('MISC', 'target_misc') },
-    strips { 'Tribunal.esm' }
+    withTribunal { named('MISC', 'target_misc') }
   )
   add('inventory-before-reference', save(two) .. record(
     'CSTA',
@@ -415,7 +361,7 @@ local function scenarios(): { Scenario }
       'Morrowind.esm',
       { named('MISC', 'target_misc'), named('CREA', 'target_crea') }
     ),
-  }, strips { 'Tribunal.esm' })
+  })
   add(
     'stolen-and-markers',
     save(two)
@@ -431,8 +377,7 @@ local function scenarios(): { Scenario }
           .. subrecord('POSY', f32(2))
           .. subrecord('NAME', refId 'target_cell')
       ),
-    withTribunal { named('MISC', 'target_misc'), named('CELL', 'target_cell') },
-    strips { 'Tribunal.esm' }
+    withTribunal { named('MISC', 'target_misc'), named('CELL', 'target_cell') }
   )
   add(
     'content-file-refnums',
@@ -451,8 +396,7 @@ local function scenarios(): { Scenario }
         'PROJ',
         subrecord('ID__', refId 'unrelated_arrow') .. subrecord('ACTO', formId(99, 2))
       ),
-    withTribunal { named('NPC_', 'db_assassin1b') },
-    strips { 'Tribunal.esm' }
+    withTribunal { named('NPC_', 'db_assassin1b') }
   )
   add(
     'lua-refnums',
@@ -463,8 +407,7 @@ local function scenarios(): { Scenario }
       ['Morrowind.esm'] = contentPlugin 'Master.esm',
       ['Tribunal.esm'] = contentPlugin 'Morrowind.esm',
       ['Bloodmoon.esm'] = contentPlugin 'Morrowind.esm',
-    },
-    strips { 'Tribunal.esm', 'Bloodmoon.esm' }
+    }
   )
   add(
     'projectiles',
@@ -489,8 +432,7 @@ local function scenarios(): { Scenario }
       named('WEAP', 'target_bow'),
       named('MGEF', 'target_magic'),
       named('SPEL', 'target_spell'),
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   local fargoth = '\2fargoth'
   add(
@@ -544,8 +486,7 @@ local function scenarios(): { Scenario }
       ['Morrowind.esm'] = contentPlugin 'Master.esm',
       ['Tribunal.esm'] = contentPlugin 'Morrowind.esm',
       ['Bloodmoon.esm'] = contentPlugin 'Morrowind.esm',
-    },
-    strips { 'Tribunal.esm' }
+    }
   )
   local door = record(
     'CSTA',
@@ -562,10 +503,9 @@ local function scenarios(): { Scenario }
   add(
     'unfixable',
     save(two) .. door .. record('PLAY', subrecord('SIGN', refId 'target_sign')),
-    keptBroken(),
-    strips { 'Tribunal.esm' }
+    keptBroken()
   )
-  add('fixable', save(two) .. chest(), keptBroken(), strips { 'Tribunal.esm' })
+  add('fixable', save(two) .. chest(), keptBroken())
   local uninstalled = keptBroken()
   uninstalled['Tribunal.esm'] = nil
   uninstalled['Morrowind.esm'] = contentPlugin('Master.esm', {
@@ -581,20 +521,11 @@ local function scenarios(): { Scenario }
       subrecord('FRMR', formId(7, 1)),
       subrecord('NAME', refId 'base_door'),
     }
-  ), uninstalled, strips { 'Tribunal.esm' })
+  ), uninstalled)
   add(
     'uninstalled-blocked',
     save(two) .. record('PLAY', subrecord('SIGN', refId 'target_sign')),
-    uninstalled,
-    strips({ 'Tribunal.esm' }, {
-      { kind = 'strip', dependencies = { 'Tribunal.esm' }, mode = 'dryRun', noConfig = true },
-      {
-        kind = 'strip',
-        dependencies = { 'Tribunal.esm', 'Morrowind.esm' },
-        mode = 'dryRun',
-        noConfig = true,
-      },
-    })
+    uninstalled
   )
   local equipment = u32(3) .. u32(0) .. u32(1) .. u32(1) .. u32(2) .. u32(2) .. u32(5)
   add('equipment', save(two, nil, true) .. record(
@@ -610,13 +541,12 @@ local function scenarios(): { Scenario }
       subrecord('EQIP', equipment),
       subrecord('SELE', i32(2)),
     }
-  ), withTribunal { named('MISC', 'tribunal_ring') }, strips { 'Tribunal.esm' })
+  ), withTribunal { named('MISC', 'tribunal_ring') })
   for _, encoding in { 'win1251', 'win1252' } do
     add(
       `encoding-{encoding}`,
       save(),
       { ['Morrowind.esm'] = contentPlugin('Master.esm', { named('BSGN', '\192\232\241\242\0') }) },
-      strips { 'Morrowind.esm' },
       `encoding={encoding}\n`
     )
   end
@@ -630,14 +560,12 @@ local function scenarios(): { Scenario }
       )
       .. door,
     withTribunal {},
-    { { kind = 'check' }, { kind = 'check', noConfig = true } },
     'content=Morrowind.esm\ncontent=Tribunal.esm\n'
   )
   add(
     'check-order',
     save { 'Morrowind.esm', 'Tribunal.esm' },
     withTribunal {},
-    { { kind = 'check' } },
     'content=Tribunal.esm\ncontent=Morrowind.esm\n'
   )
   add(
@@ -668,7 +596,6 @@ local function scenarios(): { Scenario }
       ),
       ['Unticked.esp'] = contentPlugin 'Morrowind.esm',
     },
-    strips { 'Gone.esp', 'Unticked.esp' },
     'content=Morrowind.esm\n'
   )
   add('player-record', save { 'Morrowind.esm', 'Races.esp' } .. record(
@@ -685,20 +612,18 @@ local function scenarios(): { Scenario }
       'Morrowind.esm',
       { named('RACE', 'custom_race'), named('BODY', 'custom_head') }
     ),
-  }, strips { 'Races.esp' }, 'content=Morrowind.esm\n')
+  }, 'content=Morrowind.esm\n')
   add(
     'dangling-mvrf',
     save() .. record('CSTA', subrecord('MVRF', formId(42, 0))),
-    base,
-    strips { 'Morrowind.esm' }
+    base
   )
   add(
     'incomplete-csta',
     save() .. record('CSTA', subrecord('OBJE', u32(0)) .. subrecord('FRMR', formId(42, 0))),
-    base,
-    strips { 'Morrowind.esm' }
+    base
   )
-  add('morrowind', morrowindSave(), base, strips { 'Morrowind.esm' })
+  add('morrowind', morrowindSave(), base)
   return list
 end
 
