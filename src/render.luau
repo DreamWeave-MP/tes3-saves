@@ -16,15 +16,17 @@ other way about. `@jess/data/value` writes the three formats as serde did.
 Codes (`will_not_load`, `dry-run`, a strip's reasons) are not this module's to spell: the
 commands hand them over as jess-save's sources have them, and they are written as they come.
 
-A dump is a list under `records`. Its YAML is jess's own (`./dumpyaml`), and a byte layout is
-JSON unless a format is asked for. jess wrote a dump's records as it read them, and a dump in
+A dump is a list under `records`. Its YAML is jess's own, and a byte layout is JSON unless a
+format is asked for; both are written straight from the result (`./dumptext`), since a dump is as
+big as its save. jess wrote a dump's records as it read them, and a dump in
 pages is written the same way: each page's result is its part of the one document, the first
-starting it and the last (the one without a `next`) ending it. TOML has no list that can be
-carried on, so a dump in TOML is one result.
+starting it and the last (the one without a `next`) ending it. A page can be part of one record,
+whose subrecords the next page carries on. TOML has no list that can be carried on, so a dump
+in TOML is one result.
 ]]
 
 local Commands = require './commands'
-local DumpYaml = require './dumpyaml'
+local DumpText = require './dumptext'
 local Values = require './values'
 local serialize = require '@jess/data/value'
 local tes3 = require '@tes3'
@@ -55,21 +57,11 @@ local function plain(value: unknown): Value
   return serialize.Null
 end
 
---- A record field's name as jess's files spell it. `@tes3` names a typed record's fields
---- camelCase from jess-omwaddon's snake_case ones, which are lowercase words and digits between
---- underscores, so each capital is where an underscore was. That holds for field names and for
---- nothing else: a code is never read back this way.
-local function fieldName(name: string): string
-  return (
-    string.gsub(name, '%u', function(letter: string): string return '_' .. string.lower(letter) end)
-  )
-end
-
 --- The name of the typed string field a subrecord holds.
 local function typedField(value: unknown): Value
   if type(value) ~= 'string' then return plain(value) end
 
-  return fieldName(value)
+  return DumpText.fieldName(value)
 end
 
 --- A number serde wrote as an f64: with a point, whole or not.
@@ -430,7 +422,8 @@ local function tree(node: Values.Node): Value
 
   local map = serialize.map()
   for position, key in node.keys do
-    serialize.set(map, if node.verbatim then key else fieldName(key), tree(node.values[position]))
+    local name = if node.verbatim then key else DumpText.fieldName(key)
+    serialize.set(map, name, tree(node.values[position]))
   end
 
   return map
@@ -499,43 +492,298 @@ local function document(value: Value, format: Format): string
   return serialize.encode(value, format)
 end
 
---- A document that is one list under `records`, or the part of it one page of a dump is:
---- `continued` when an earlier page started the list, `last` when no page follows.
-local function records(items: { Value }, format: Format, continued: boolean, last: boolean): string
-  if format == 'toml' then
-    if continued or not last then error('a dump in TOML can\'t be written in pages', 0) end
-
-    return document(serialize.struct { { 'records', serialize.array(items) } }, format)
-  end
-
-  if #items == 0 and not continued then
-    if not last then return '' end
-
-    return if format == 'yaml' then 'records: []\n' else '{"records":[]}\n'
-  end
-
-  if format == 'yaml' then
-    return if continued then DumpYaml.items(items) else DumpYaml.list('records', items)
-  end
-
-  local parts: { string } = {}
-  for position, item in items do
-    table.insert(parts, if position == 1 and not continued then '{"records":[' else ',')
-    table.insert(parts, serialize.encode(item, 'json'))
-  end
-
-  if last then table.insert(parts, ']}\n') end
-
-  return table.concat(parts)
+--- Fields under names already spelled as the document has them.
+local function fieldsOf(keys: { string }, values: { Values.Node }): Values.Fields
+  return { kind = 'map' :: 'map', keys = keys, values = values, verbatim = true }
 end
 
-local function each<Item>(list: { Item }?, shape: (Item) -> Value): { Value }
-  local items: { Value } = {}
-  for position, item in list or {} do
-    items[position] = shape(item)
+local ListedKeys, ListedWithId = { 'record', 'type' }, { 'record', 'type', 'id' }
+
+local function listedNode(entry: Commands.Listed): Values.Fields
+  if entry.id then return fieldsOf(ListedWithId, { entry.record, entry.type, entry.id }) end
+
+  return fieldsOf(ListedKeys, { entry.record, entry.type })
+end
+
+local RangeKeys = { 'start', 'end' }
+local SubrecordKeys = { 'index', 'type', 'size', 'range' }
+local TypedSubrecordKeys = { 'index', 'type', 'size', 'range', 'field', 'value' }
+
+--- jess-omwaddon's `SubrecordLayout`.
+local function subrecordNode(sub: Commands.SubrecordLayout): Values.Fields
+  local range = fieldsOf(RangeKeys, { sub.range.start, sub.range['end'] })
+  local name, value = sub.field, sub.value
+  if not name and not value then
+    return fieldsOf(SubrecordKeys, { sub.index, sub.type, sub.size, range })
   end
 
-  return items
+  if name and value then
+    return fieldsOf(
+      TypedSubrecordKeys,
+      { sub.index, sub.type, sub.size, range, DumpText.fieldName(name), value }
+    )
+  end
+
+  local keys = table.clone(SubrecordKeys)
+  local values: { Values.Node } = { sub.index, sub.type, sub.size, range }
+  if name then
+    table.insert(keys, 'field')
+    table.insert(values, DumpText.fieldName(name))
+  end
+
+  if value then
+    table.insert(keys, 'value')
+    table.insert(values, value)
+  end
+
+  return fieldsOf(keys, values)
+end
+
+local LayoutKeys = { 'index', 'type', 'flags', 'size', 'range' }
+local LayoutWithId = { 'index', 'type', 'id', 'flags', 'size', 'range' }
+
+--- jess-omwaddon's `RecordLayout` up to its subrecords.
+local function layoutNode(layout: Commands.RecordLayout): Values.Fields
+  local range = fieldsOf(RangeKeys, { layout.range.start, layout.range['end'] })
+  if layout.id then
+    return fieldsOf(
+      LayoutWithId,
+      { layout.index, layout.type, layout.id, layout.flags, layout.size, range }
+    )
+  end
+
+  return fieldsOf(LayoutKeys, { layout.index, layout.type, layout.flags, layout.size, range })
+end
+
+--- A record's layout as an item of a YAML list: its own fields, then its subrecords, then the
+--- CELL references instance filters picked. A subrecord is written as soon as it is shaped: a
+--- cell's record has tens of thousands. `resumed` is a part that carries a record on: more of
+--- its subrecords, under the key the first part wrote.
+local function yamlLayout(out: { string }, layout: Commands.RecordLayout, resumed: boolean)
+  local subrecords = layout.subrecords
+  if not resumed then
+    DumpText.yamlFields(out, layoutNode(layout), 2, '- ')
+    if subrecords and #subrecords > 0 then table.insert(out, '  subrecords:\n') end
+  end
+
+  for _, sub in subrecords or {} do
+    DumpText.yamlItem(out, subrecordNode(sub), 2)
+  end
+
+  local references = layout.references
+  if not references then return end
+
+  table.insert(out, if #references == 0 then '  references: []\n' else '  references:\n')
+  for _, reference in references do
+    table.insert(out, `  - index: {reference.index}\n`)
+    if #reference.subrecords == 0 then
+      table.insert(out, '    subrecords: []\n')
+      continue
+    end
+
+    table.insert(out, '    subrecords:\n')
+    for _, sub in reference.subrecords do
+      DumpText.yamlItem(out, subrecordNode(sub), 4)
+    end
+  end
+end
+
+local function jsonSubrecords(out: { string }, subrecords: { Commands.SubrecordLayout })
+  table.insert(out, '"subrecords":[')
+  for position, sub in subrecords do
+    if position > 1 then table.insert(out, ',') end
+
+    DumpText.jsonValue(out, subrecordNode(sub))
+  end
+
+  table.insert(out, ']')
+end
+
+--- A record's layout as a JSON object, written the same way. `resumed` is a part that carries a
+--- record on, and `unfinished` one a later part will: the list of subrecords is opened by the
+--- first part and closed by the last.
+local function jsonLayout(
+  out: { string },
+  layout: Commands.RecordLayout,
+  resumed: boolean,
+  unfinished: boolean
+)
+  local subrecords = layout.subrecords or {}
+  if resumed or unfinished then
+    if not resumed then
+      table.insert(out, '{')
+      DumpText.jsonFields(out, layoutNode(layout))
+      table.insert(out, ',"subrecords":[')
+    end
+
+    for position, sub in subrecords do
+      if resumed or position > 1 then table.insert(out, ',') end
+
+      DumpText.jsonValue(out, subrecordNode(sub))
+    end
+
+    if not unfinished then table.insert(out, ']}') end
+
+    return
+  end
+
+  table.insert(out, '{')
+  DumpText.jsonFields(out, layoutNode(layout))
+  if #subrecords > 0 then
+    table.insert(out, ',')
+    jsonSubrecords(out, subrecords)
+  end
+
+  local references = layout.references
+  if references then
+    table.insert(out, ',"references":[')
+    for position, reference in references do
+      table.insert(out, `{if position > 1 then ',' else ''}\{"index":{reference.index},`)
+      jsonSubrecords(out, reference.subrecords)
+      table.insert(out, '}')
+    end
+
+    table.insert(out, ']')
+  end
+
+  table.insert(out, '}')
+end
+
+--- The subrecords of a save-only record's value, which are the last of its fields.
+local function subrecordsOf(node: Values.Node): { Values.Node }
+  if type(node) ~= 'table' or node.kind ~= 'map' then error('a part of a record has no subrecords', 0) end
+
+  local list = node.values[#node.values]
+  if type(list) ~= 'table' or list.kind ~= 'list' then
+    error('a part of a record has no subrecords', 0)
+  end
+
+  return list.items
+end
+
+--- A record's value as an item of a YAML list; `resumed` is a part that carries a record on,
+--- and so is more of its subrecords.
+local function yamlRecord(out: { string }, node: Values.Node, resumed: boolean)
+  if not resumed then
+    DumpText.yamlItem(out, node, 0)
+    return
+  end
+
+  for _, item in subrecordsOf(node) do
+    DumpText.yamlItem(out, item, 2)
+  end
+end
+
+--- A record's value as JSON; `resumed` is a part that carries a record on, and `unfinished` one
+--- a later part will, so the list of subrecords is opened by the first part and closed by the
+--- last.
+local function jsonRecord(out: { string }, node: Values.Node, resumed: boolean, unfinished: boolean)
+  if not resumed and not unfinished then
+    DumpText.jsonValue(out, node)
+    return
+  end
+
+  local items = subrecordsOf(node)
+  if not resumed then
+    local fields = node :: Values.Fields
+    local last = #fields.keys
+    local head: Values.Fields = {
+      kind = 'map',
+      keys = table.move(fields.keys, 1, last - 1, 1, {}),
+      values = table.move(fields.values, 1, last - 1, 1, {}),
+      verbatim = fields.verbatim,
+    }
+
+    table.insert(out, '{')
+    DumpText.jsonFields(out, head)
+    table.insert(out, ',"subrecords":[')
+  end
+
+  for position, item in items do
+    if resumed or position > 1 then table.insert(out, ',') end
+
+    DumpText.jsonValue(out, item)
+  end
+
+  if not unfinished then table.insert(out, ']}') end
+end
+
+--- A dump's records in TOML, which has no list a later page could carry on: one document.
+local function tomlRecords(result: Commands.DumpResult, continued: boolean): string
+  if continued or result.next then error('a dump in TOML can\'t be written in pages', 0) end
+
+  local items: { Value } = {}
+  for position, layout in result.layouts or {} do
+    items[position] = Layout(layout)
+  end
+
+  for position, entry in result.listed or {} do
+    items[position] = Listed(entry)
+  end
+
+  for position, node in result.records or {} do
+    items[position] = tree(node)
+  end
+
+  return document(serialize.struct { { 'records', serialize.array(items) } }, 'toml')
+end
+
+--- A dump's records as the list under `records`, or the part of it one page of a dump is:
+--- `continued` when an earlier page started the list, and ended by a result without a `next`.
+local function records(
+  result: Commands.DumpResult,
+  format: 'yaml' | 'json',
+  continued: boolean
+): string
+  local out: { string } = {}
+  local count = 0
+  local yaml = format == 'yaml'
+  --- What comes before each record: the start of the document, or what sets it off from the last.
+  local function open()
+    count += 1
+    local first = count == 1 and not continued
+    if yaml then
+      if first then table.insert(out, 'records:\n') end
+    else
+      table.insert(out, if first then '{"records":[' else ',')
+    end
+  end
+
+  -- A page that is part of one record holds that record alone: it carries the record on when
+  -- the result `resumes`, and leaves it to be carried on when it has a `nextSubrecord`.
+  local resumed = result.resumes == true
+  local unfinished = result.nextSubrecord ~= nil
+  for _, layout in result.layouts or {} do
+    if not resumed then open() end
+
+    if yaml then
+      yamlLayout(out, layout, resumed)
+    else
+      jsonLayout(out, layout, resumed, unfinished)
+    end
+  end
+
+  for _, entry in result.listed or {} do
+    open()
+    if yaml then DumpText.yamlItem(out, listedNode(entry), 0) else DumpText.jsonValue(out, listedNode(entry)) end
+  end
+
+  for _, node in result.records or {} do
+    if not resumed then open() end
+
+    if yaml then yamlRecord(out, node, resumed) else jsonRecord(out, node, resumed, unfinished) end
+  end
+
+  local last = result.next == nil
+  if count == 0 and not continued and not resumed then
+    if not last then return '' end
+
+    return if yaml then 'records: []\n' else '{"records":[]}\n'
+  end
+
+  if last and not yaml then table.insert(out, ']}\n') end
+
+  return table.concat(out)
 end
 
 --- `result` as the document `jess save` printed for it, in `options.format`.
@@ -570,16 +818,10 @@ local function render(result: Commands.Result, options: Options?): string
   end
 
   local continued = options ~= nil and options.continued == true
-  local last = result.next == nil
-  if result.mode == 'layout' then
-    return records(each(result.layouts, Layout), format or 'json', continued, last)
-  end
+  local chosen = format or (if result.mode == 'layout' then 'json' else 'yaml')
+  if chosen == 'toml' then return tomlRecords(result, continued) end
 
-  if result.mode == 'list' then
-    return records(each(result.listed, Listed), format or 'yaml', continued, last)
-  end
-
-  return records(each(result.records, tree), format or 'yaml', continued, last)
+  return records(result, chosen, continued)
 end
 
 return table.freeze { render = render }

@@ -465,6 +465,77 @@ suite.describe('dump', function()
     expect(function() commands.dump { path = path, limit = 0 } end).toThrow 'a page of a dump holds at least one record'
   end)
 
+  suite.it('ends a page at a budget of record bytes, and gives a bigger record in parts', function()
+    -- The `fixable` save: a header, a SAVE record, and a chest's cell state of 19 subrecords.
+    local path = disk.install('fixable', 'commands-dump-parts').save
+    local whole = assert(commands.dump({ path = path }).records)
+    expect(#whole).toBe(3)
+    local subrecords = listOf(at(whole[3], 'subrecords')).items
+    expect(#subrecords).toBe(19)
+
+    -- A budget no record fits: each is a page of its own, and comes whole without a part size.
+    local alone = commands.dump { path = path, byteLimit = 1 }
+    expect(#assert(alone.records)).toBe(1)
+    expect(alone.next).toBe(1)
+    expect(alone.nextSubrecord).toBeNil()
+    local last = commands.dump { path = path, byteLimit = 1, from = 2 }
+    expect(assert(last.records)[1]).toEqual(whole[3])
+    expect(last.next).toBeNil()
+
+    -- With a part size, the cell state comes eight subrecords at a time; the typed header whole.
+    local header = commands.dump { path = path, byteLimit = 1, subrecordLimit = 8, from = 1 }
+    expect(assert(header.records)[1]).toEqual(whole[2])
+    expect(header.nextSubrecord).toBeNil()
+    expect(header.next).toBe(2)
+
+    local gathered: { saves.Node } = {}
+    local from: number?, fromSubrecord: number? = 2, nil
+    local parts = 0
+    while from == 2 do
+      local page = commands.dump {
+        path = path,
+        byteLimit = 1,
+        subrecordLimit = 8,
+        from = from,
+        fromSubrecord = fromSubrecord,
+      }
+
+      parts += 1
+      expect(page.resumes == true).toBe(parts > 1)
+      expect(at(assert(page.records)[1], 'record')).toBe(2)
+      for _, item in listOf(at(assert(page.records)[1], 'subrecords')).items do
+        table.insert(gathered, item)
+      end
+
+      from, fromSubrecord = page.next, page.nextSubrecord
+    end
+
+    expect(parts).toBe(3)
+    expect(from).toBeNil()
+    expect(gathered).toEqual(subrecords)
+
+    -- A byte layout comes in parts the same way.
+    local layout = assert(commands.dump({ path = path, raw = true }).layouts)[3]
+    local first = commands.dump { path = path, raw = true, byteLimit = 1, subrecordLimit = 8, from = 2 }
+    expect(first.nextSubrecord).toBe(8)
+    expect(first.next).toBe(2)
+    local second = commands.dump {
+      path = path,
+      raw = true,
+      byteLimit = 1,
+      subrecordLimit = 15,
+      from = 2,
+      fromSubrecord = 8,
+    }
+
+    expect(second.resumes).toBe(true)
+    expect(second.nextSubrecord).toBeNil()
+    local laid = table.clone(assert(assert(first.layouts)[1].subrecords))
+    table.move(assert(assert(second.layouts)[1].subrecords), 1, 11, 9, laid)
+    expect(laid).toEqual(layout.subrecords)
+    expect(function() commands.dump { path = path, byteLimit = 1, subrecordLimit = 0 } end).toThrow 'a part of a record holds at least one subrecord'
+  end)
+
   suite.it('reads the save again for a page when the file has changed', function()
     local path = saved('commands-dump-pages-changed', dumps.dynamic())
     local first = commands.dump { path = path, list = true, limit = 1 }

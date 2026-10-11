@@ -528,19 +528,36 @@ end
 
 type Indexes = { contentFiles: { string }, luaScripts: { string } }
 
-local function subrecordsValue(record: Record, indexes: Indexes): Node
+--- A save-only record's value: its number, its type, and each subrecord's best-known decoding.
+--- With `limit`, only the subrecords from position `from` (0 without one) up to that many, and
+--- the position the next part starts at when there are more: a cell's record can hold tens of
+--- thousands, and what one means depends on the ones before it, which are still read.
+local function subrecordsValue(
+  record: Record,
+  indexes: Indexes,
+  from: number?,
+  limit: number?
+): (Node, number?)
   local subrecords: { Node } = {}
   local inventoryItemsRemaining = 0
-  for position = 0, #record.subs - 1 do
+  local first = from or 0
+  local last = #record.subs - 1
+  if limit then last = math.min(last, first + limit - 1) end
+
+  for position = 0, last do
     local tag = Records.tagAt(record, position) :: string
-    local data = Records.payload(record, position)
-    if tag == 'ICNT' then inventoryItemsRemaining = Records.inventoryCount(data) end
+    if tag == 'ICNT' then
+      inventoryItemsRemaining = Records.inventoryCount(Records.payload(record, position))
+    end
 
     local meaning = Scan.refIdField(record, position, inventoryItemsRemaining)
     if meaning == 'inventory_item_base_object' then
       inventoryItemsRemaining = math.max(inventoryItemsRemaining - 1, 0)
     end
 
+    if position < first then continue end
+
+    local data = Records.payload(record, position)
     local value: Node? = nil
     local subrecord = record.subs[position + 1]
     if tag == 'LUAD' then
@@ -576,11 +593,13 @@ local function subrecordsValue(record: Record, indexes: Indexes): Node
     table.insert(subrecords, fields({ { tag, value } }, true))
   end
 
-  return fields {
+  local value = fields {
     { 'record', record.index },
     { 'type', record.tag },
     { 'subrecords', list(subrecords) },
   }
+
+  return value, if last < #record.subs - 1 then last + 1 else nil
 end
 
 local function strings(items: { string }): List
@@ -634,8 +653,10 @@ end
 
 --- What gives record `index`'s readable value for `save`: OpenMW saves give typed values for the
 --- SAVE header and dynamic records and a subrecord list otherwise; Morrowind saves give the
---- header's metadata, then typed values for the record types jess models.
-local function reader(save: Save): (index: number) -> Node
+--- header's metadata, then typed values for the record types jess models. A subrecord list can
+--- be had in parts: with `limit`, at most that many subrecords from position `from`, and the
+--- position the next part starts at when the record has more. A typed value comes whole.
+local function reader(save: Save): (index: number, from: number?, limit: number?) -> (Node, number?)
   local plugin = save.plugin
   local headerCode = tes3.tags.code(if save.game == 'openmw' then 'SAVE' else 'TES3')
   local unnamed: Save = { plugin = plugin, game = save.game, name = '' }
@@ -667,20 +688,22 @@ local function reader(save: Save): (index: number) -> Node
     end
   end
 
-  return function(index: number): Node
+  return function(index: number, from: number?, limit: number?): (Node, number?)
     if plugin:code(index) == headerCode and ok then
-      return headerValue(index, header :: Read.Info)
+      return headerValue(index, header :: Read.Info), nil
     end
 
-    if save.game == 'morrowind' then return fromPlain(tes3.display.display(plugin, index)) end
+    if save.game == 'morrowind' then
+      return fromPlain(tes3.display.display(plugin, index)), nil
+    end
 
     local record = Records.record(plugin, index)
     if DynamicTags[record.tag] or record.tag == 'GLOB' then
       local typed = typedContentValue(plugin, index, record)
-      if typed then return typed end
+      if typed then return typed, nil end
     end
 
-    return subrecordsValue(record, indexes)
+    return subrecordsValue(record, indexes, from, limit)
   end
 end
 
@@ -692,14 +715,14 @@ local function tree(save: Save, indices: { number }?): { Node }
   local out: { Node } = {}
   if indices then
     for position, index in indices do
-      out[position] = read(index)
+      out[position] = (read(index))
     end
 
     return out
   end
 
   for index = 0, save.plugin:count() - 1 do
-    out[index + 1] = read(index)
+    out[index + 1] = (read(index))
   end
 
   return out
@@ -710,7 +733,7 @@ local function values(save: Save): { unknown }
   local read = reader(save)
   local out = table.create(save.plugin:count())
   for index = 0, save.plugin:count() - 1 do
-    out[index + 1] = plain(read(index))
+    out[index + 1] = plain((read(index)))
   end
 
   return out

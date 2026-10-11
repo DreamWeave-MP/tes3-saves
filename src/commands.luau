@@ -304,12 +304,20 @@ export type DumpRequest = Input & {
   from: number?,
   limit: number?,
   byteLimit: number?,
+  --- With `byteLimit`, a record bigger than the budget comes in parts of at most this many
+  --- subrecords, each a page: one cell's record can be a quarter of its save. A part's result has
+  --- a `nextSubrecord`, which is the `fromSubrecord` of the page after it. Only a record shown
+  --- subrecord by subrecord comes in parts: a typed value, and a layout narrowed by subrecord or
+  --- instance filters, comes whole.
+  subrecordLimit: number?,
+  fromSubrecord: number?,
 }
 
 export type Listed = { record: number, type: string, id: string? }
 
 --- A record's byte layout, with its CELL references when instance filters select them.
 export type RecordLayout = Layout.RecordLayout & { references: { Layout.ReferenceLayout }? }
+export type SubrecordLayout = Layout.SubrecordLayout
 
 export type DumpResult = {
   command: 'dump',
@@ -324,6 +332,12 @@ export type DumpResult = {
   --- For a dump in pages: the record to look from for the next page. Nil once the save has been
   --- looked through, as it has for a dump that isn't in pages.
   next: number?,
+  --- For a page that is part of one record: where in record `next` the page after it carries on.
+  --- The record's value here holds the subrecords of this part alone.
+  nextSubrecord: number?,
+  --- Whether this page carries on a record the page before began: its one record is then more
+  --- of that record's subrecords, and not a record of its own.
+  resumes: boolean?,
   --- The size of the extracted file.
   bytes: number?,
   output: string?,
@@ -342,7 +356,7 @@ type Paged = {
   size: number?,
   modified: number?,
   save: Read.Save,
-  read: (index: number) -> Values.Node,
+  read: (index: number, from: number?, limit: number?) -> (Values.Node, number?),
 }
 
 local paged: Paged? = nil
@@ -390,6 +404,10 @@ local function dump(request: DumpRequest): DumpResult
     error('a page of a dump holds at least one record', 0)
   end
 
+  if request.subrecordLimit and request.subrecordLimit < 1 then
+    error('a part of a record holds at least one subrecord', 0)
+  end
+
   local kept = if inPages then openPaged(request) else nil
   local save = if kept then kept.save else open(request)
   local plugin = save.plugin
@@ -416,37 +434,81 @@ local function dump(request: DumpRequest): DumpResult
   -- The records this dump gives: every one the record filters pass from `from` on, up to a
   -- page's worth. A save's readable dump picks whole records: subrecord and instance filters
   -- narrow a layout or an extraction, and say nothing here, as jess-save's dump had it.
+  local count = plugin:count()
   local indices: { number } = {}
   local next: number? = nil
+  -- The record this page gives a part of, and where in it the part starts.
+  local parted: number? = nil
+  local resume = request.fromSubrecord
   local bytes = 0
-  for index = request.from or 0, plugin:count() - 1 do
+  if resume then
+    parted = request.from or 0
+    indices = { parted }
+  end
+
+  for index = if resume then count else request.from or 0, count - 1 do
     if (limit and #indices == limit) or (byteLimit and #indices > 0 and bytes >= byteLimit) then
       next = index
       break
     end
 
-    if Select.matchesRecord(selector, plugin, index) then
+    if not Select.matchesRecord(selector, plugin, index) then continue end
+
+    local size = RecordHeader + plugin:size(index)
+    if byteLimit and size > byteLimit then
+      -- A record bigger than the budget is a page of its own, and comes in parts if it can.
+      if #indices > 0 then
+        next = index
+        break
+      end
+
+      if request.subrecordLimit and not request.list then parted = index end
+
       table.insert(indices, index)
-      bytes += RecordHeader + plugin:size(index)
+      next = if index + 1 < count then index + 1 else nil
+      break
     end
+
+    table.insert(indices, index)
+    bytes += size
   end
 
-  if not next then paged = nil end
+  if resume and parted and parted + 1 < count then next = parted + 1 end
 
+  local resumes = if resume then true else nil
   if request.raw then
     local instances = not request.list and Select.hasInstanceFilters(selector)
     local layouts: { RecordLayout } = {}
+    local nextSubrecord: number? = nil
     for _, index in indices do
-      local layout: RecordLayout =
-        Layout.layout(plugin, index, selector, { subrecords = not request.list, fields = true })
-      if instances and plugin:code(index) == CellTag then
-        layout.references = Layout.references(plugin, index, selector, true)
-      end
+      local cell = instances and plugin:code(index) == CellTag
+      local whole = index ~= parted or cell or Select.hasSubrecordFilters(selector)
+      local layout: RecordLayout, more = Layout.layout(plugin, index, selector, {
+        subrecords = not request.list,
+        fields = true,
+        from = if whole then nil else resume,
+        limit = if whole then nil else request.subrecordLimit,
+      })
+
+      if cell then layout.references = Layout.references(plugin, index, selector, true) end
 
       table.insert(layouts, layout)
+      nextSubrecord = more
     end
 
-    return { command = 'dump', path = path, mode = 'layout', layouts = layouts, next = next }
+    if nextSubrecord then next = parted end
+
+    if not next then paged = nil end
+
+    return {
+      command = 'dump',
+      path = path,
+      mode = 'layout',
+      layouts = layouts,
+      next = next,
+      nextSubrecord = nextSubrecord,
+      resumes = resumes,
+    }
   end
 
   if request.list then
@@ -460,16 +522,35 @@ local function dump(request: DumpRequest): DumpResult
       })
     end
 
+    if not next then paged = nil end
+
     return { command = 'dump', path = path, mode = 'list', listed = listed, next = next }
   end
 
   local read = if kept then kept.read else Values.reader(save)
   local records: { Values.Node } = {}
+  local nextSubrecord: number? = nil
   for position, index in indices do
-    records[position] = read(index)
+    if index == parted then
+      records[position], nextSubrecord = read(index, resume, request.subrecordLimit)
+    else
+      records[position] = (read(index))
+    end
   end
 
-  return { command = 'dump', path = path, mode = 'records', records = records, next = next }
+  if nextSubrecord then next = parted end
+
+  if not next then paged = nil end
+
+  return {
+    command = 'dump',
+    path = path,
+    mode = 'records',
+    records = records,
+    next = next,
+    nextSubrecord = nextSubrecord,
+    resumes = resumes,
+  }
 end
 
 export type Result = InfoResult | CheckResult | StripResult | ScreenshotResult | DumpResult

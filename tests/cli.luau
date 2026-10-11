@@ -1377,6 +1377,36 @@ suite.describe('run', function()
     expect(select(2, string.gsub(document, '\n%- record: ', ''))).toBe(600)
   end)
 
+  suite.it('writes a record that comes in parts as the one record', function()
+    local path = disk.install('fixable', 'cli-run-dump-parts').save
+    expect(cli.run { 'dump', path }).toBe(0)
+    for _, argv in {
+      { 'dump', path },
+      { '--format', 'json', 'dump', path },
+      { 'dump', '--raw', path },
+      { '--format', 'yaml', 'dump', '--raw', path },
+      { 'dump', '--list', path },
+      { 'dump', '--raw', '--sub-match', 'NAME', path },
+    } do
+      local request = parsed(argv)
+      assert(request.command == 'dump')
+      local whole = cli.render(commands.dump(request.request), { format = request.format })
+      -- Every budget a run could ask with: pages of one record, and its subrecords a few at a time.
+      for _, size in { 1, 4, 7, 19, 64 } do
+        local page = table.clone(request.request)
+        page.byteLimit, page.subrecordLimit = 1, size
+        local document = ''
+        repeat
+          local result = commands.dump(page)
+          document ..= cli.render(result, { format = request.format, continued = document ~= '' })
+          page.from, page.fromSubrecord = result.next, result.nextSubrecord
+        until not result.next
+
+        expect(document).toBe(whole)
+      end
+    end
+  end)
+
   suite.it('lists a save\'s records', function()
     local path = saved('cli-run-dump-list', fixtures.save())
     expect(cli.run { 'dump', '--list', path }).toBe(0)

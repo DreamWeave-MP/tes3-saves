@@ -616,8 +616,12 @@ end
 local PageSize = 256
 local PageBytes = 64 * 1024
 
---- The command `request` names, carried out; for a dump, the page that starts at record `from`.
-local function execute(request: Request, from: number?): Commands.Result?
+--- How many subrecords of a record bigger than a page's budget a dump asks for at a time.
+local PartSize = 1024
+
+--- The command `request` names, carried out; for a dump, the page that starts at record `from`,
+--- at its subrecord `fromSubrecord` when the page before left that record unfinished.
+local function execute(request: Request, from: number?, fromSubrecord: number?): Commands.Result?
   if request.command == 'info' then return Commands.info(request.request) end
 
   if request.command == 'check' then
@@ -642,6 +646,7 @@ local function execute(request: Request, from: number?): Commands.Result?
 
     local page = table.clone(request.request)
     page.from, page.limit, page.byteLimit = from, PageSize, PageBytes
+    page.fromSubrecord, page.subrecordLimit = fromSubrecord, PartSize
     return Commands.dump(page)
   end
 
@@ -665,13 +670,13 @@ local function run(argv: { string }): number
     return Exit.ok
   end
 
-  local from: number? = nil
+  local from: number?, fromSubrecord: number? = nil, nil
   local continued = false
   while true do
     -- A command raises for a request it can't carry out at all: a file that isn't there or isn't
     -- a save, a configuration that can't be loaded, a pattern that isn't a regex, a file that
     -- can't be written.
-    local done, outcome = pcall(execute, request, from)
+    local done, outcome = pcall(execute, request, from, fromSubrecord)
     if not done or not outcome then
       err(reason(outcome))
       return Exit.runtime
@@ -689,6 +694,7 @@ local function run(argv: { string }): number
 
     out(document)
     from = if result.command == 'dump' then result.next else nil
+    fromSubrecord = if result.command == 'dump' then result.nextSubrecord else nil
     if not from then
       local message = found(result)
       if message then err(message) end

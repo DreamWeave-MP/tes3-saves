@@ -7,9 +7,11 @@ Where a save's records and subrecords sit in its bytes (what `dump` gives with `
 selected records' bytes as a file of their own (`rawOutput`).
 
 `layout` and `references` are `@tes3cmd`'s, from its `src/display.luau` (its commit 0c85ddd), and
-`extractMatching` is its `src/edit.luau`'s (its commit 811a89d), unchanged: byte layouts and
-extraction are that package's, and it depends on this one, so this one can't ask it for them.
-When they have a home below both packages, this file goes.
+`extractMatching` is its `src/edit.luau`'s (its commit 811a89d): byte layouts and extraction are
+that package's, and it depends on this one, so this one can't ask it for them. When they have a
+home below both packages, this file goes. One thing is added here: `layout` gives a record's
+subrecords in parts when asked (`from`, `limit`), because a save's cell records hold tens of
+thousands.
 ]]
 
 local Select = require './select'
@@ -83,8 +85,8 @@ local function layout(
   plugin: Plugin,
   index: number,
   selector: Select.Selector,
-  options: { subrecords: boolean?, fields: boolean? }?
-): RecordLayout
+  options: { subrecords: boolean?, fields: boolean?, from: number?, limit: number? }?
+): (RecordLayout, number?)
   local start, finish = plugin:range(index)
   local id = tes3.records.fieldId(plugin, index) or tes3.records.id(plugin, index)
   local out: RecordLayout = {
@@ -96,11 +98,16 @@ local function layout(
     range = { start = start, ['end'] = finish },
   }
 
-  if not options or not options.subrecords then return out end
+  if not options or not options.subrecords then return out, nil end
 
   local fields = if options.fields then fieldsBySubrecord(plugin, index) else {}
   local list = {}
-  for ordinal, sub in plugin:subrecords(index) do
+  local subs = plugin:subrecords(index)
+  -- With a limit, the subrecords from position `from` up to that many, and where the rest start.
+  local first = (options.from or 0) + 1
+  local last = if options.limit then math.min(#subs, first + options.limit - 1) else #subs
+  for ordinal = first, last do
+    local sub = subs[ordinal]
     if not Select.matchesSubrecord(selector, plugin, index, sub) then continue end
 
     table.insert(list, subrecordLayout(plugin, index, ordinal - 1, sub, fields[ordinal - 1]))
@@ -108,7 +115,7 @@ local function layout(
 
   if #list > 0 then out.subrecords = list end
 
-  return out
+  return out, if last < #subs then last else nil
 end
 
 --- The CELL references of record `index` that pass the selector's instance filters, each with
