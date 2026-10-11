@@ -22,11 +22,14 @@ type Plugin = tes3.Plugin
 type Record = Records.Record
 type Save = Read.Save
 
+--- A count map: how many a scan found of each role, meaning, or record type, by its name.
+type Counts = { [string]: number }
+
 local camelCase = tes3.text.camelCase
 
 --- `camelCase` for each key of a count map.
-local function camelKeys(counts: { [string]: number }): { [string]: number }
-  local out: { [string]: number } = {}
+local function camelKeys(counts: Counts): Counts
+  local out: Counts = {}
   for key, count in counts do
     out[camelCase(key)] = count
   end
@@ -767,9 +770,7 @@ local function saveReferences(
   limit: number
 ): ReferenceScan
   local total = 0
-  local byRole: { [string]: number } = {}
-  local byMeaning: { [string]: number } = {}
-  local byRecordType: { [string]: number } = {}
+  local byRole: Counts, byMeaning: Counts, byRecordType: Counts = {}, {}, {}
   local samples = {}
   for _, field in Scan.refIdFields(records) do
     local record, position, meaning = field.record, field.subrecord, field.meaning
@@ -833,8 +834,7 @@ local function contentFileReferences(
   limit: number
 ): { [string]: unknown }
   local total = 0
-  local byMeaning: { [string]: number } = {}
-  local byRecordType: { [string]: number } = {}
+  local byMeaning: Counts, byRecordType: Counts = {}, {}
   local samples = {}
   for _, hit in hits do
     if hit.contentFile ~= index then continue end
@@ -1214,6 +1214,7 @@ local function operationsOf(
       return edit.operation == 'delete_target_save_record' and edit.meaning ~= 'saved_cell_state'
     end
   )
+
   if references then
     local roles = {
       {
