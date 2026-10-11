@@ -169,6 +169,7 @@ local function scenarios(): { Scenario }
       named('GLOB', 'DBAttack'),
     }
   )
+
   add('cell-state', save(two) .. record(
     'CSTA',
     table.concat {
@@ -184,6 +185,7 @@ local function scenarios(): { Scenario }
       subrecord('NAME', refId 'target_cell'),
     }
   ), withTribunal { named('CELL', 'target_cell') })
+
   for _, version in { 36, 37, CurrentFormatVersion + 1 } do
     add(`format-{version}`, save(nil, version), base)
   end
@@ -246,6 +248,7 @@ local function scenarios(): { Scenario }
       ),
     }
   )
+
   add(
     'typed-refids',
     save(two)
@@ -261,6 +264,7 @@ local function scenarios(): { Scenario }
       named('GLOB', 'DBAttack'),
     }
   )
+
   add(
     'spell-state',
     save(two)
@@ -291,6 +295,7 @@ local function scenarios(): { Scenario }
       named('NPC_', 'target_npc'),
     }
   )
+
   add(
     'overrides',
     save(two)
@@ -398,6 +403,7 @@ local function scenarios(): { Scenario }
       ),
     withTribunal { named('NPC_', 'db_assassin1b') }
   )
+
   add(
     'lua-refnums',
     save(three)
@@ -409,6 +415,7 @@ local function scenarios(): { Scenario }
       ['Bloodmoon.esm'] = contentPlugin 'Morrowind.esm',
     }
   )
+
   add(
     'projectiles',
     save(two)
@@ -488,6 +495,7 @@ local function scenarios(): { Scenario }
       ['Bloodmoon.esm'] = contentPlugin 'Morrowind.esm',
     }
   )
+
   local door = record(
     'CSTA',
     table.concat {
@@ -513,6 +521,7 @@ local function scenarios(): { Scenario }
     named('CONT', 'base_chest'),
     named('DOOR', 'base_door'),
   })
+
   add('uninstalled', save(two) .. chest() .. record(
     'CSTA',
     table.concat {
@@ -542,6 +551,7 @@ local function scenarios(): { Scenario }
       subrecord('SELE', i32(2)),
     }
   ), withTribunal { named('MISC', 'tribunal_ring') })
+
   for _, encoding in { 'win1251', 'win1252' } do
     add(
       `encoding-{encoding}`,
@@ -598,6 +608,7 @@ local function scenarios(): { Scenario }
     },
     'content=Morrowind.esm\n'
   )
+
   add('player-record', save { 'Morrowind.esm', 'Races.esp' } .. record(
     'NPC_',
     table.concat {
