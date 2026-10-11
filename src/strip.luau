@@ -105,22 +105,22 @@ end
 local function pushGroup(
   edits: { Edit },
   operation: string,
-  r: Record,
+  record: Record,
   range: Scan.Range,
-  k: number,
+  position: number,
   meaning: string,
   reason: string
 )
-  if alreadyPlanned(edits, operation, r.index, range.start) then return end
+  if alreadyPlanned(edits, operation, record.index, range.start) then return end
 
   table.insert(edits, {
     operation = operation,
     status = 'planned',
-    recordIndex = r.index,
-    recordType = r.tag,
+    recordIndex = record.index,
+    recordType = record.tag,
     subrecordIndex = range.start,
     subrecordEndIndex = range.finish,
-    subrecordType = Records.tagAt(r, k),
+    subrecordType = Records.tagAt(record, position),
     meaning = meaning,
     reason = reason,
   })
@@ -166,21 +166,21 @@ local function pushTargetIntroducedEdits(
   edits: { Edit }
 )
   for _, field in Scan.refIdFields(records) do
-    local r, k, meaning = field.record, field.subrecord, field.meaning
-    if subrecordPlannedForDeletion(edits, r.index, k) then continue end
+    local record, position, meaning = field.record, field.subrecord, field.meaning
+    if subrecordPlannedForDeletion(edits, record.index, position) then continue end
 
     if roleOf(provenance, field.id) ~= 'introduced_by_target' then continue end
 
     if meaning == 'cell_ref_base_object' then
-      local group = Scan.cstaReferenceGroup(r, k)
+      local group = Scan.cstaReferenceGroup(record, position)
       if not group then error('target-introduced CSTA RefId is not inside a reference group', 0) end
 
       pushGroup(
         edits,
         'delete_csta_reference_group',
-        r,
+        record,
         group,
-        k,
+        position,
         meaning,
         'CSTA_reference_group_base_object_is_introduced_by_removed_dependency'
       )
@@ -188,38 +188,38 @@ local function pushTargetIntroducedEdits(
     end
 
     if meaning == 'inventory_item_base_object' then
-      local group = Scan.inventoryItemGroup(r, k)
+      local group = Scan.inventoryItemGroup(record, position)
       if not group then
         error('target-introduced inventory item RefId is not inside an inventory item group', 0)
       end
 
-      if not Scan.inventoryCountFor(r, group.start) then
+      if not Scan.inventoryCountFor(record, group.start) then
         error('target-introduced inventory item has no preceding ICNT', 0)
       end
 
       pushGroup(
         edits,
         'delete_inventory_item_group',
-        r,
+        record,
         group,
-        k,
+        position,
         meaning,
         'inventory_item_base_object_is_introduced_by_removed_dependency'
       )
       continue
     end
 
-    local fix = Scan.fieldEdit(r, k, meaning)
+    local fix = Scan.fieldEdit(record, position, meaning)
     if fix then
       -- Object groups owned by the removed dependency are deleted whole by the RefNum pass.
-      if Scan.inTargetCstaGroup(r, k, provenance.targetIndex) then continue end
+      if Scan.inTargetCstaGroup(record, position, provenance.targetIndex) then continue end
 
-      pushGroup(edits, fix.operation, r, fix.range, k, meaning, fix.reason)
+      pushGroup(edits, fix.operation, record, fix.range, position, meaning, fix.reason)
       continue
     end
 
     if meaning == 'stolen_item_ref_id' then
-      local group = Scan.stolenItemGroup(r, k)
+      local group = Scan.stolenItemGroup(record, position)
       if not group then
         error('target-introduced stolen item RefId is not inside a stolen item group', 0)
       end
@@ -227,25 +227,25 @@ local function pushTargetIntroducedEdits(
       pushGroup(
         edits,
         'delete_stolen_item_group',
-        r,
+        record,
         group,
-        k,
+        position,
         meaning,
         'stolen_item_is_introduced_by_removed_dependency'
       )
       continue
     end
 
-    local reason = Scan.deletePolicy(r.tag, meaning)
-    if not reason or recordPlannedForDeletion(edits, r.index) then continue end
+    local reason = Scan.deletePolicy(record.tag, meaning)
+    if not reason or recordPlannedForDeletion(edits, record.index) then continue end
 
     table.insert(edits, {
       operation = 'delete_target_save_record',
       status = 'planned',
-      recordIndex = r.index,
-      recordType = r.tag,
-      subrecordIndex = k,
-      subrecordType = Records.tagAt(r, k),
+      recordIndex = record.index,
+      recordType = record.tag,
+      subrecordIndex = position,
+      subrecordType = Records.tagAt(record, position),
       meaning = meaning,
       reason = reason,
     })
@@ -276,8 +276,8 @@ end
 
 --- What happens to a reference that points at the content file being removed.
 local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
-  local r, k = hit.record, hit.subrecord
-  local tag = Records.tagAt(r, k)
+  local record, position = hit.record, hit.subrecord
+  local tag = Records.tagAt(record, position)
   local function blocked(reason: string)
     table.insert(
       edits,
@@ -285,17 +285,19 @@ local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
     )
   end
 
-  if r.tag == 'CSTA' and tag == 'FRMR' then
-    local group, frmr = Scan.cstaReferenceGroup(r, k)
+  if record.tag == 'CSTA' and tag == 'FRMR' then
+    local group, frmr = Scan.cstaReferenceGroup(record, position)
     if not group then error('CSTA reference is not inside a reference group', 0) end
 
-    local index, contentFile = Records.wideFormId(Records.payload(r, frmr))
+    local index, contentFile = Records.wideFormId(Records.payload(record, frmr))
     if not (index and contentFile == hit.contentFile) then
       blocked 'known_reference_points_at_the_dependency_being_removed'
       return
     end
 
-    if alreadyPlanned(edits, 'delete_csta_reference_group', r.index, group.start) then return end
+    if alreadyPlanned(edits, 'delete_csta_reference_group', record.index, group.start) then
+      return
+    end
 
     local edit = contentFileEdit(
       hit,
@@ -309,14 +311,16 @@ local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
     return
   end
 
-  if r.tag == 'CSTA' and tag == 'MVRF' then
-    local group = Scan.cstaMovedReferenceGroup(r, k)
+  if record.tag == 'CSTA' and tag == 'MVRF' then
+    local group = Scan.cstaMovedReferenceGroup(record, position)
     if not group then
       blocked 'moved_reference_marker_has_no_current_format_cell_id'
       return
     end
 
-    if alreadyPlanned(edits, 'delete_moved_reference_group', r.index, group.start) then return end
+    if alreadyPlanned(edits, 'delete_moved_reference_group', record.index, group.start) then
+      return
+    end
 
     local edit = contentFileEdit(
       hit,
@@ -375,20 +379,20 @@ local function plannedEdits(
     end
   end
 
-  for _, r in records do
-    if r.tag ~= 'SAVE' then continue end
+  for _, record in records do
+    if record.tag ~= 'SAVE' then continue end
 
     local seen = 0
-    for k = 0, #r.subs - 1 do
-      if Records.tagAt(r, k) ~= 'DEPE' then continue end
+    for position = 0, #record.subs - 1 do
+      if Records.tagAt(record, position) ~= 'DEPE' then continue end
 
       if seen == index then
         table.insert(edits, {
           operation = 'remove_save_dependency',
           status = 'planned',
-          recordIndex = r.index,
+          recordIndex = record.index,
           recordType = 'SAVE',
-          subrecordIndex = k,
+          subrecordIndex = position,
           subrecordType = 'DEPE',
           oldContentFileIndex = index,
           reason = 'requested_dependency_entry_would_be_removed_from_SAVE_DEPE',
@@ -470,10 +474,10 @@ local function missingTargetProvenance(
   known[LoadOrder.token(ids, 'player', encoding, true) :: number] = true
   local incomplete = false
   local unreadable, dependents = {}, {}
-  for i, dependency in dependencies do
-    if i - 1 == target or not Records.isRecordContentFile(dependency) then continue end
+  for ordinal, dependency in dependencies do
+    if ordinal - 1 == target or not Records.isRecordContentFile(dependency) then continue end
 
-    local path = resolutions[i].path
+    local path = resolutions[ordinal].path
     if not path then
       -- A missing dependency being removed too defines nothing that stays.
       incomplete = incomplete or not alsoRemoved[string.lower(dependency)]
@@ -553,8 +557,8 @@ local function provenanceOf(
 
   local reader = order :: LoadOrder.LoadOrder
   local unresolvedBeforeTarget = false
-  for i = 1, target do
-    if not resolutions[i].path and Records.isRecordContentFile(dependencies[i]) then
+  for ordinal = 1, target do
+    if not resolutions[ordinal].path and Records.isRecordContentFile(dependencies[ordinal]) then
       unresolvedBeforeTarget = true
       break
     end
@@ -573,7 +577,7 @@ local function provenanceOf(
     if not plugin then error(`failed to read dependency '{name}' ({targetPath}): {problem}`, 0) end
 
     local found = LoadOrder.ids(plugin, ids)
-    for k, token in found.tokens do
+    for slot, token in found.tokens do
       if not token then continue end
 
       local set = types[token]
@@ -582,16 +586,16 @@ local function provenanceOf(
         types[token] = set
       end
 
-      set[tes3.tags.display(found.codes[k])] = true
+      set[tes3.tags.display(found.codes[slot])] = true
     end
   end
 
   local tags: { [number]: string } = {}
-  for i, dependency in dependencies do
-    local path = resolutions[i].path
+  for ordinal, dependency in dependencies do
+    local path = resolutions[ordinal].path
     if not path or not Records.isRecordContentFile(path) then continue end
 
-    local index = i - 1
+    local index = ordinal - 1
     local plugin, problem = LoadOrder.openContent(reader, path, encoding, cache)
     if not plugin then
       -- An unreadable earlier dependency may define records the target also defines, so treat it
@@ -612,12 +616,12 @@ local function provenanceOf(
     local lowTag: { [number]: string }, lowAt: { [number]: number } = {}, {}
     local highTag: { [number]: string }, highAt: { [number]: number } = {}, {}
     local found = LoadOrder.ids(plugin, ids)
-    local function idAt(k: number): string return tes3.records.id(plugin, k - 1) :: string end
+    local function idAt(slot: number): string return tes3.records.id(plugin, slot - 1) :: string end
 
-    for k, token in found.tokens do
+    for slot, token in found.tokens do
       if not token or not types[token] then continue end
 
-      local code = found.codes[k]
+      local code = found.codes[slot]
       local tag = tags[code]
       if not tag then
         tag = tes3.tags.display(code)
@@ -626,17 +630,17 @@ local function provenanceOf(
 
       local low = lowTag[token]
       if not low then
-        lowTag[token], lowAt[token], highTag[token], highAt[token] = tag, k, tag, k
+        lowTag[token], lowAt[token], highTag[token], highAt[token] = tag, slot, tag, slot
         continue
       end
 
-      if tag < low or (tag == low and idAt(k) < idAt(lowAt[token])) then
-        lowTag[token], lowAt[token] = tag, k
+      if tag < low or (tag == low and idAt(slot) < idAt(lowAt[token])) then
+        lowTag[token], lowAt[token] = tag, slot
       end
 
       local high = highTag[token]
-      if tag > high or (tag == high and idAt(k) > idAt(highAt[token])) then
-        highTag[token], highAt[token] = tag, k
+      if tag > high or (tag == high and idAt(slot) > idAt(highAt[token])) then
+        highTag[token], highAt[token] = tag, slot
       end
     end
 
@@ -708,11 +712,11 @@ local function targetRecords(
   local byType: { [string]: number } = {}
   local samples: { { type: string, id: string } } = {}
   local total = 0
-  for k = 0, plugin:count() - 1 do
-    local source, at, length = tes3.records.idSpan(plugin, k)
+  for index = 0, plugin:count() - 1 do
+    local source, at, length = tes3.records.idSpan(plugin, index)
     if not source then continue end
 
-    local code = plugin:code(k)
+    local code = plugin:code(index)
     local ofType = seen[code]
     if not ofType then
       ofType = {}
@@ -732,7 +736,7 @@ local function targetRecords(
     local last = samples[#samples]
     if #samples == limit and tag > last.type then continue end
 
-    local id = tes3.records.id(plugin, k) :: string
+    local id = tes3.records.id(plugin, index) :: string
     if #samples == limit and tag == last.type and id > last.id then continue end
 
     local place = #samples + 1
@@ -768,25 +772,27 @@ local function saveReferences(
   local byRecordType: { [string]: number } = {}
   local samples = {}
   for _, field in Scan.refIdFields(records) do
-    local r, k, meaning = field.record, field.subrecord, field.meaning
-    if Scan.inTargetCstaGroup(r, k, provenance.targetIndex) then continue end
+    local record, position, meaning = field.record, field.subrecord, field.meaning
+    if Scan.inTargetCstaGroup(record, position, provenance.targetIndex) then continue end
 
     local token = tokenOf(provenance, field.id)
     local role = if token then provenance.roles[token] else nil
     if not token or not role then continue end
 
-    if role == 'introduced_by_target' and Scan.canPlanDelete(r, k, meaning) then continue end
+    if role == 'introduced_by_target' and Scan.canPlanDelete(record, position, meaning) then
+      continue
+    end
 
     total += 1
     byRole[role] = (byRole[role] or 0) + 1
     byMeaning[meaning] = (byMeaning[meaning] or 0) + 1
-    byRecordType[r.tag] = (byRecordType[r.tag] or 0) + 1
+    byRecordType[record.tag] = (byRecordType[record.tag] or 0) + 1
     if #samples < limit then
       table.insert(samples, {
-        recordIndex = r.index,
-        recordType = r.tag,
-        subrecordIndex = k,
-        subrecordType = Records.tagAt(r, k),
+        recordIndex = record.index,
+        recordType = record.tag,
+        subrecordIndex = position,
+        subrecordType = Records.tagAt(record, position),
         refId = field.id,
         meaning = camelCase(meaning),
         provenanceRole = camelCase(role),
@@ -1267,9 +1273,9 @@ local function remapLua(value: tes3.LuaValue, old: number, new: number): number
     count += 1
   end
 
-  for _, r in value.refs or {} do
-    if r.contentFile == old then
-      r.contentFile = new
+  for _, reference in value.refs or {} do
+    if reference.contentFile == old then
+      reference.contentFile = new
       count += 1
     end
   end
@@ -1284,21 +1290,22 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
     if edit.status ~= 'planned' or edit.operation ~= 'remap_content_file_index' then continue end
 
     local record = need(edit.recordIndex, 'remap_content_file_index edit has no record index')
-    local k = need(edit.subrecordIndex, 'remap_content_file_index edit has no subrecord index')
+    local position =
+      need(edit.subrecordIndex, 'remap_content_file_index edit has no subrecord index')
     local new = need(edit.newContentFileIndex, 'remap_content_file_index edit has no target index')
     if record >= plugin:count() then
       error('remap_content_file_index record index is out of bounds', 0)
     end
 
     local subs = plugin:subrecords(record)
-    local sub = subs[k + 1]
+    local sub = subs[position + 1]
     if not sub then error('remap_content_file_index subrecord index is out of bounds', 0) end
 
     local source = plugin:span(record)
     if sub.tag == 'LUAD' then
       local old =
         need(edit.oldContentFileIndex, 'remap_content_file_index LUAD edit has no source index')
-      local key = `{record}:{k}:{old}`
+      local key = `{record}:{position}:{old}`
       if remappedLua[key] then continue end
 
       remappedLua[key] = true
@@ -1310,7 +1317,7 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
         error('remap_content_file_index LUAD edit did not find the planned source index', 0)
       end
 
-      plugin:replaceSubrecord(record, k, tes3.save.encodeLuaData(value :: tes3.LuaValue))
+      plugin:replaceSubrecord(record, position, tes3.save.encodeLuaData(value :: tes3.LuaValue))
       continue
     end
 
@@ -1321,7 +1328,7 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
     local payload = buffer.create(8)
     buffer.copy(payload, 0, source, sub.payload, 4)
     buffer.writei32(payload, 4, new)
-    plugin:replaceSubrecord(record, k, payload)
+    plugin:replaceSubrecord(record, position, payload)
   end
 end
 
@@ -1330,14 +1337,15 @@ local function verifyRemapped(plugin: Plugin, edits: { Edit })
     if edit.status ~= 'planned' or edit.operation ~= 'remap_content_file_index' then continue end
 
     local record = need(edit.recordIndex, 'remap_content_file_index edit has no record index')
-    local k = need(edit.subrecordIndex, 'remap_content_file_index edit has no subrecord index')
+    local position =
+      need(edit.subrecordIndex, 'remap_content_file_index edit has no subrecord index')
     local localIndex = need(edit.localIndex, 'remap_content_file_index edit has no local index')
     local new = need(edit.newContentFileIndex, 'remap_content_file_index edit has no target index')
     if record >= plugin:count() then
       error('remap_content_file_index verification record index is out of bounds', 0)
     end
 
-    local sub = plugin:subrecords(record)[k + 1]
+    local sub = plugin:subrecords(record)[position + 1]
     if not sub then
       error('remap_content_file_index verification subrecord index is out of bounds', 0)
     end
@@ -1394,21 +1402,21 @@ local function renumberEquipment(
     return position - below
   end
 
-  local r = Records.record(plugin, record)
+  local snapshot = Records.record(plugin, record)
   -- This inventory's trailing subrecords run until the next object group or inventory.
-  local finish = #r.subs
-  for k = countAt + 1, #r.subs - 1 do
-    local tag = Records.tagAt(r, k)
+  local finish = #snapshot.subs
+  for subrecordIndex = countAt + 1, #snapshot.subs - 1 do
+    local tag = Records.tagAt(snapshot, subrecordIndex)
     if tag == 'ICNT' or tag == 'OBJE' then
-      finish = k
+      finish = subrecordIndex
       break
     end
   end
 
   local replacements: { { number | string } } = {}
-  for k = countAt + 1, finish - 1 do
-    local tag = Records.tagAt(r, k)
-    local data = Records.payload(r, k)
+  for subrecordIndex = countAt + 1, finish - 1 do
+    local tag = Records.tagAt(snapshot, subrecordIndex)
+    local data = Records.payload(snapshot, subrecordIndex)
     if tag == 'EQIP' then
       if #data < 4 then error('EQIP payload is too short', 0) end
 
@@ -1426,7 +1434,7 @@ local function renumberEquipment(
         table.insert(parts, string.pack('<I4', shifted(pair[1] :: number)) .. (pair[2] :: string))
       end
 
-      table.insert(replacements, { k, table.concat(parts) })
+      table.insert(replacements, { subrecordIndex, table.concat(parts) })
     elseif tag == 'SELE' then
       if #data ~= 4 then error('SELE payload is not 4 bytes', 0) end
 
@@ -1434,7 +1442,7 @@ local function renumberEquipment(
       local rewritten = selected
       if selected >= 0 then rewritten = if gone[selected] then -1 else shifted(selected) end
 
-      table.insert(replacements, { k, string.pack('<i4', rewritten) })
+      table.insert(replacements, { subrecordIndex, string.pack('<i4', rewritten) })
     end
   end
 
@@ -1457,13 +1465,15 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
       error('delete_inventory_item_group record index is out of bounds', 0)
     end
 
-    local r = Records.record(plugin, record)
-    local countAt =
-      need(Scan.inventoryCountFor(r, start), 'delete_inventory_item_group has no preceding ICNT')
+    local snapshot = Records.record(plugin, record)
+    local countAt = need(
+      Scan.inventoryCountFor(snapshot, start),
+      'delete_inventory_item_group has no preceding ICNT'
+    )
     -- Every inventory item group starts with FRMR, so its position is the FRMRs before it.
     local position = 0
-    for k = countAt + 1, start - 1 do
-      if Records.tagAt(r, k) == 'FRMR' then
+    for subrecordIndex = countAt + 1, start - 1 do
+      if Records.tagAt(snapshot, subrecordIndex) == 'FRMR' then
         position += 1
       end
     end
@@ -1479,16 +1489,16 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
     table.insert(entry.removed, position)
   end
 
-  table.sort(order, function(a: Removal, b: Removal)
-    if a.record ~= b.record then return a.record < b.record end
+  table.sort(order, function(left: Removal, right: Removal)
+    if left.record ~= right.record then return left.record < right.record end
 
-    return a.countAt < b.countAt
+    return left.countAt < right.countAt
   end)
 
   for _, entry in order do
     renumberEquipment(plugin, entry.record, entry.countAt, entry.removed)
-    local r = Records.record(plugin, entry.record)
-    local data = Records.payload(r, entry.countAt)
+    local snapshot = Records.record(plugin, entry.record)
+    local data = Records.payload(snapshot, entry.countAt)
     if #data ~= 4 then error('ICNT payload is not 4 bytes', 0) end
 
     local count = Records.u32At(data) - #entry.removed
@@ -1527,8 +1537,11 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
 
     local record = need(edit.recordIndex, `{operation} edit has no record index`)
     if operation == 'remove_save_dependency' then
-      local k = need(edit.subrecordIndex, `{operation} edit has no subrecord index`)
-      table.insert(deletions, { record = record, start = k, finish = k + 1, operation = operation })
+      local position = need(edit.subrecordIndex, `{operation} edit has no subrecord index`)
+      table.insert(
+        deletions,
+        { record = record, start = position, finish = position + 1, operation = operation }
+      )
     else
       local start = need(edit.subrecordIndex, `{operation} edit has no start index`)
       local finish = need(edit.subrecordEndIndex, `{operation} edit has no end index`)
@@ -1539,12 +1552,12 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
     end
   end
 
-  table.sort(deletions, function(a: Deletion, b: Deletion)
-    if a.record ~= b.record then return a.record < b.record end
+  table.sort(deletions, function(left: Deletion, right: Deletion)
+    if left.record ~= right.record then return left.record < right.record end
 
-    if a.start ~= b.start then return a.start < b.start end
+    if left.start ~= right.start then return left.start < right.start end
 
-    return a.finish < b.finish
+    return left.finish < right.finish
   end)
 
   local previousRecord, previousFinish = -1, 0
@@ -1578,8 +1591,8 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
       table.insert(records, deletion.record)
     end
 
-    for k = deletion.start, deletion.finish - 1 do
-      table.insert(list, k)
+    for position = deletion.start, deletion.finish - 1 do
+      table.insert(list, position)
     end
   end
 
@@ -1613,8 +1626,8 @@ local function deleteRecords(plugin: Plugin, edits: { Edit })
     end
   end
 
-  for i = #indices, 1, -1 do
-    plugin:delete(indices[i])
+  for slot = #indices, 1, -1 do
+    plugin:delete(indices[slot])
   end
 
   -- OpenMW writes the exact count of records after TES3 (statemanagerimp.cpp:289-298); this also
@@ -1634,14 +1647,14 @@ local function verifyResult(plugin: Plugin, before: { string }, index: number, d
   if not ok then error(`failed to read dry-run save metadata: {profile}`, 0) end
 
   local expected = {}
-  for i, name in before do
-    if i - 1 ~= index then table.insert(expected, name) end
+  for ordinal, name in before do
+    if ordinal - 1 ~= index then table.insert(expected, name) end
   end
 
   local dependencies = (profile :: tes3.SaveProfile).dependencies
   local same = #dependencies == #expected
-  for i, name in expected do
-    same = same and dependencies[i] == name
+  for ordinal, name in expected do
+    same = same and dependencies[ordinal] == name
   end
 
   if not same then
@@ -1655,8 +1668,8 @@ local function verifyResult(plugin: Plugin, before: { string }, index: number, d
   local list = masters :: { tes3.Master }
   if #list > 0 then
     local matches = #list == #expected
-    for i, master in list do
-      matches = matches and master.name == expected[i]
+    for ordinal, master in list do
+      matches = matches and master.name == expected[ordinal]
     end
 
     if not matches then
@@ -1836,9 +1849,9 @@ local function strip(
   local requested: { [number]: boolean } = {}
   for _, name in dependencies do
     local found: number? = nil
-    for i, dependency in all do
+    for ordinal, dependency in all do
       if string.lower(dependency) == string.lower(name) then
-        found = i
+        found = ordinal
         break
       end
     end
@@ -1849,8 +1862,8 @@ local function strip(
   end
 
   local removal = {}
-  for i = #all, 1, -1 do
-    if requested[i] then table.insert(removal, all[i]) end
+  for ordinal = #all, 1, -1 do
+    if requested[ordinal] then table.insert(removal, all[ordinal]) end
   end
 
   local contentEncoding = order and order.encoding or encoding
@@ -1895,16 +1908,17 @@ local function strip(
     local metadata = tes3.save.profile(plugin)
     local deps = metadata.dependencies
     local index = 0
-    for i, candidate in deps do
+    for ordinal, candidate in deps do
       if string.lower(candidate) == string.lower(dependency) then
-        index = i - 1
+        index = ordinal - 1
         break
       end
     end
 
     local stepResolutions: { Resolution } = {}
-    for i, name in deps do
-      stepResolutions[i] = resolutions[string.lower(name)] or { status = 'missing' } :: Resolution
+    for ordinal, name in deps do
+      stepResolutions[ordinal] = resolutions[string.lower(name)]
+        or { status = 'missing' } :: Resolution
     end
 
     local targetResolution = stepResolutions[index + 1]
