@@ -32,6 +32,10 @@ Every command that writes takes `output` (where to write), `backup` (false to re
 without copying it to `.bak`, `.bak1`, ... first), and `dryRun` (do the work in memory and say
 what would be written, writing nothing). Its result says what was `written`: nothing for a dry
 run, or for a strip that was blocked.
+
+A dump can be asked for in pages (`from`, `limit`, and the result's `next`), which is how a front
+end shows a long save's records without holding them all. The save a dump in pages read is kept
+until its last page, or until the file changes; nothing else here outlives its call.
 ]]
 
 local Check = require './check'
@@ -288,6 +292,11 @@ export type DumpRequest = Input & {
   backup: boolean?,
   --- With `rawOutput`, say what would be written and write nothing.
   dryRun: boolean?,
+  --- A dump in pages, for a save too big to hold all at once as values: at most `limit` of the
+  --- selected records, looked for from record `from` (0 without one). The result's `next` is the
+  --- `from` of the page after it.
+  from: number?,
+  limit: number?,
 }
 
 export type Listed = { record: number, type: string, id: string? }
@@ -305,6 +314,9 @@ export type DumpResult = {
   records: { Values.Node }?,
   listed: { Listed }?,
   layouts: { RecordLayout }?,
+  --- For a dump in pages: the record to look from for the next page. Nil once the save has been
+  --- looked through, as it has for a dump that isn't in pages.
+  next: number?,
   --- The size of the extracted file.
   bytes: number?,
   output: string?,
@@ -312,11 +324,62 @@ export type DumpResult = {
   written: Written?,
 }
 
+--- The save a dump in pages last read, kept for its next page: each page would otherwise read
+--- and frame the whole file again. It is the same save while the request names it the same way
+--- and the file is the size it was and was last written at the same moment, and it is let go with
+--- the last page.
+type Paged = {
+  path: string,
+  game: Game?,
+  encoding: Encoding?,
+  size: number?,
+  modified: number?,
+  save: Read.Save,
+  read: (index: number) -> Values.Node,
+}
+
+local paged: Paged? = nil
+
+local function openPaged(request: DumpRequest): Paged
+  local path = request.path
+  local size, modified = jess.fs.size(path), jess.fs.modified(path)
+  local kept = paged
+  if
+    kept
+    and kept.path == path
+    and kept.game == request.game
+    and kept.encoding == request.encoding
+    and kept.size == size
+    and kept.modified == modified
+  then
+    return kept
+  end
+
+  local save = open(request)
+  local opened: Paged = {
+    path = path,
+    game = request.game,
+    encoding = request.encoding,
+    size = size,
+    modified = modified,
+    save = save,
+    read = Values.reader(save),
+  }
+
+  paged = opened
+  return opened
+end
+
 local CellTag = tes3.tags.code 'CELL'
 
 local function dump(request: DumpRequest): DumpResult
   local path = request.path
-  local save = open(request)
+  local inPages = request.limit ~= nil and not request.rawOutput
+  local limit = request.limit
+  if limit and limit < 1 then error('a page of a dump holds at least one record', 0) end
+
+  local kept = if inPages then openPaged(request) else nil
+  local save = if kept then kept.save else open(request)
   local plugin = save.plugin
   local selector = Select.new(request.selectors)
   local output = request.rawOutput
@@ -338,12 +401,26 @@ local function dump(request: DumpRequest): DumpResult
     }
   end
 
+  -- The records this dump gives: every one the record filters pass from `from` on, up to a
+  -- page's worth. A save's readable dump picks whole records: subrecord and instance filters
+  -- narrow a layout or an extraction, and say nothing here, as jess-save's dump had it.
+  local indices: { number } = {}
+  local next: number? = nil
+  for index = request.from or 0, plugin:count() - 1 do
+    if limit and #indices == limit then
+      next = index
+      break
+    end
+
+    if Select.matchesRecord(selector, plugin, index) then table.insert(indices, index) end
+  end
+
+  if not next then paged = nil end
+
   if request.raw then
     local instances = not request.list and Select.hasInstanceFilters(selector)
     local layouts: { RecordLayout } = {}
-    for index = 0, plugin:count() - 1 do
-      if not Select.matchesRecord(selector, plugin, index) then continue end
-
+    for _, index in indices do
       local layout: RecordLayout =
         Layout.layout(plugin, index, selector, { subrecords = not request.list, fields = true })
       if instances and plugin:code(index) == CellTag then
@@ -353,14 +430,7 @@ local function dump(request: DumpRequest): DumpResult
       table.insert(layouts, layout)
     end
 
-    return { command = 'dump', path = path, mode = 'layout', layouts = layouts }
-  end
-
-  -- A save's readable dump picks whole records: subrecord and instance filters narrow a layout
-  -- or an extraction, and say nothing here, as jess-save's dump had it.
-  local indices: { number } = {}
-  for index = 0, plugin:count() - 1 do
-    if Select.matchesRecord(selector, plugin, index) then table.insert(indices, index) end
+    return { command = 'dump', path = path, mode = 'layout', layouts = layouts, next = next }
   end
 
   if request.list then
@@ -369,15 +439,21 @@ local function dump(request: DumpRequest): DumpResult
       local id = tes3.records.id(plugin, index)
       table.insert(listed, {
         record = index,
-        type = plugin:tag(index),
+        type = tes3.tags.display(plugin:code(index)),
         id = if id and id ~= '' then id else nil,
       })
     end
 
-    return { command = 'dump', path = path, mode = 'list', listed = listed }
+    return { command = 'dump', path = path, mode = 'list', listed = listed, next = next }
   end
 
-  return { command = 'dump', path = path, mode = 'records', records = Values.tree(save, indices) }
+  local read = if kept then kept.read else Values.reader(save)
+  local records: { Values.Node } = {}
+  for position, index in indices do
+    records[position] = read(index)
+  end
+
+  return { command = 'dump', path = path, mode = 'records', records = records, next = next }
 end
 
 export type Result = InfoResult | CheckResult | StripResult | ScreenshotResult | DumpResult

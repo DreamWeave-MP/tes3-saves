@@ -608,8 +608,12 @@ local function reason(problem: unknown): string
   return string.match(message, '^[^\n]-%.luau:%d+: (.*)$') or message
 end
 
---- The command `request` names, carried out.
-local function execute(request: Request): Commands.Result?
+--- How many records a dump asks for at a time. A save's records are printed as they are read,
+--- as jess printed them, so a long save is never held whole as values.
+local PageSize = 256
+
+--- The command `request` names, carried out; for a dump, the page that starts at record `from`.
+local function execute(request: Request, from: number?): Commands.Result?
   if request.command == 'info' then return Commands.info(request.request) end
 
   if request.command == 'check' then
@@ -626,7 +630,16 @@ local function execute(request: Request): Commands.Result?
 
   if request.command == 'screenshot' then return Commands.screenshot(request.request) end
 
-  if request.command == 'dump' then return Commands.dump(request.request) end
+  if request.command == 'dump' then
+    -- An extraction is one file, and TOML has no list a later page could carry on.
+    if request.request.rawOutput or request.format == 'toml' then
+      return Commands.dump(request.request)
+    end
+
+    local page = table.clone(request.request)
+    page.from, page.limit = from, PageSize
+    return Commands.dump(page)
+  end
 
   return nil
 end
@@ -648,28 +661,40 @@ local function run(argv: { string }): number
     return Exit.ok
   end
 
-  -- A command raises for a request it can't carry out at all: a file that isn't there or isn't a
-  -- save, a configuration that can't be loaded, a pattern that isn't a regex, a file that can't
-  -- be written.
-  local done, result = pcall(execute, request)
-  if not done or not result then
-    err(reason(result))
-    return Exit.runtime
+  local from: number? = nil
+  local continued = false
+  while true do
+    -- A command raises for a request it can't carry out at all: a file that isn't there or isn't
+    -- a save, a configuration that can't be loaded, a pattern that isn't a regex, a file that
+    -- can't be written.
+    local done, outcome = pcall(execute, request, from)
+    if not done or not outcome then
+      err(reason(outcome))
+      return Exit.runtime
+    end
+
+    local result = outcome :: Commands.Result
+    -- TOML has no null and no list of mixed kinds; the serializer raises for a document it can't
+    -- hold, as the toml crate did.
+    local shown, document =
+      pcall(Render.render, result, { format = request.format, continued = continued })
+    if not shown then
+      err(`failed to write output: {reason(document)}`)
+      return Exit.runtime
+    end
+
+    out(document)
+    from = if result.command == 'dump' then result.next else nil
+    if not from then
+      local message = found(result)
+      if message then err(message) end
+
+      return status(result)
+    end
+
+    -- A page that gave no record wrote nothing, and the document is still to be started.
+    continued = continued or document ~= ''
   end
-
-  -- TOML has no null and no list of mixed kinds; the serializer raises for a document it can't
-  -- hold, as the toml crate did.
-  local shown, document = pcall(Render.render, result :: Commands.Result, { format = request.format })
-  if not shown then
-    err(`failed to write output: {reason(document)}`)
-    return Exit.runtime
-  end
-
-  out(document)
-  local message = found(result :: Commands.Result)
-  if message then err(message) end
-
-  return status(result :: Commands.Result)
 end
 
 return table.freeze {

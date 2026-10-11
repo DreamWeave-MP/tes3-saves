@@ -425,6 +425,56 @@ suite.describe('dump', function()
     expect(jess.fs.exists(output .. '.bak1')).toBe(false)
   end)
 
+  suite.it('gives a dump a page at a time, each saying where the next starts', function()
+    local path = saved('commands-dump-pages', dumps.dynamic())
+    local whole = commands.dump { path = path, list = true }
+    expect(whole.next).toBeNil()
+
+    local first = commands.dump { path = path, list = true, limit = 3 }
+    expect(first.listed).toEqual {
+      { record = 0, type = 'TES3' },
+      { record = 1, type = 'SAVE' },
+      { record = 2, type = 'NPC_', id = 'player' },
+    }
+    expect(first.next).toBe(3)
+    local second = commands.dump { path = path, list = true, limit = 3, from = first.next }
+    expect(second.listed).toEqual { { record = 3, type = 'GLOB', id = 'TimesDied' } }
+    expect(second.next).toBeNil()
+
+    -- A page holds the records the selectors pick, however many it looks through for them.
+    local picked = commands.dump { path = path, list = true, limit = 1, selectors = { type = 'GLOB' } }
+    expect(picked.listed).toEqual { { record = 3, type = 'GLOB', id = 'TimesDied' } }
+    expect(picked.next).toBeNil()
+
+    -- Values and layouts come in pages the same way, and the pages are the whole dump's.
+    local values = assert(commands.dump({ path = path }).records)
+    local layouts = assert(commands.dump({ path = path, raw = true }).layouts)
+    local from: number? = 0
+    local position = 0
+    while from do
+      local page = commands.dump { path = path, limit = 1, from = from }
+      local layout = commands.dump { path = path, raw = true, limit = 1, from = from }
+      position += 1
+      expect(assert(page.records)[1]).toEqual(values[position])
+      expect(assert(layout.layouts)[1]).toEqual(layouts[position])
+      expect(layout.next).toBe(page.next)
+      from = page.next
+    end
+
+    expect(position).toBe(4)
+    expect(function() commands.dump { path = path, limit = 0 } end).toThrow 'a page of a dump holds at least one record'
+  end)
+
+  suite.it('reads the save again for a page when the file has changed', function()
+    local path = saved('commands-dump-pages-changed', dumps.dynamic())
+    local first = commands.dump { path = path, list = true, limit = 1 }
+    expect(first.next).toBe(1)
+    disk.write(path, fixtures.morrowindSave())
+    local second = commands.dump { path = path, list = true, limit = 9, from = first.next }
+    expect(#assert(second.listed)).toBe(4)
+    expect(assert(second.listed)[4]).toEqual { record = 4, type = 'NPC_', id = 'player' }
+  end)
+
   suite.it('refuses a pattern that isn\'t a regex', function()
     local path = saved('commands-dump-regex', fixtures.save())
     expect(function() commands.dump { path = path, selectors = { id = '(' } } end).toThrow 'invalid regex \'(\''

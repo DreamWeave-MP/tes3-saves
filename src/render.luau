@@ -13,7 +13,10 @@ in an f32's digits. Each report's shape below is the struct it was (`SaveInfo`, 
 `SaveStripReport`, the layouts); `@vfs/serialize` writes the three formats as serde did.
 
 A dump is a list under `records`. Its YAML is jess's own (`./dumpyaml`), and a byte layout is
-JSON unless a format is asked for.
+JSON unless a format is asked for. jess wrote a dump's records as it read them, and a dump in
+pages is written the same way: each page's result is its part of the one document, the first
+starting it and the last (the one without a `next`) ending it. TOML has no list that can be
+carried on, so a dump in TOML is one result.
 ]]
 
 local Codes = require './codes'
@@ -29,6 +32,9 @@ export type Format = 'yaml' | 'json' | 'toml'
 export type Options = {
   --- YAML without one, except for a dump's byte layout, which is JSON.
   format: Format?,
+  --- For a page of a dump: whether an earlier page gave records, so that this one carries the
+  --- document on instead of starting it.
+  continued: boolean?,
 }
 
 --- What a field of a result becomes in the document.
@@ -492,11 +498,34 @@ local function document(value: Value, format: Format): string
   return serialize.encode(value, format)
 end
 
---- A document that is one list under `records`.
-local function records(items: { Value }, format: Format): string
-  if format == 'yaml' then return DumpYaml.list('records', items) end
+--- A document that is one list under `records`, or the part of it one page of a dump is:
+--- `continued` when an earlier page started the list, `last` when no page follows.
+local function records(items: { Value }, format: Format, continued: boolean, last: boolean): string
+  if format == 'toml' then
+    if continued or not last then error('a dump in TOML can\'t be written in pages', 0) end
 
-  return document(serialize.struct { { 'records', serialize.array(items) } }, format)
+    return document(serialize.struct { { 'records', serialize.array(items) } }, format)
+  end
+
+  if #items == 0 and not continued then
+    if not last then return '' end
+
+    return if format == 'yaml' then 'records: []\n' else '{"records":[]}\n'
+  end
+
+  if format == 'yaml' then
+    return if continued then DumpYaml.items(items) else DumpYaml.list('records', items)
+  end
+
+  local parts: { string } = {}
+  for position, item in items do
+    table.insert(parts, if position == 1 and not continued then '{"records":[' else ',')
+    table.insert(parts, serialize.encode(item, 'json'))
+  end
+
+  if last then table.insert(parts, ']}\n') end
+
+  return table.concat(parts)
 end
 
 local function each<Item>(list: { Item }?, shape: (Item) -> Value): { Value }
@@ -539,11 +568,17 @@ local function render(result: Commands.Result, options: Options?): string
     return document(Extracted(shown), format or 'yaml')
   end
 
-  if result.mode == 'layout' then return records(each(result.layouts, Layout), format or 'json') end
+  local continued = options ~= nil and options.continued == true
+  local last = result.next == nil
+  if result.mode == 'layout' then
+    return records(each(result.layouts, Layout), format or 'json', continued, last)
+  end
 
-  if result.mode == 'list' then return records(each(result.listed, Listed), format or 'yaml') end
+  if result.mode == 'list' then
+    return records(each(result.listed, Listed), format or 'yaml', continued, last)
+  end
 
-  return records(each(result.records, tree), format or 'yaml')
+  return records(each(result.records, tree), format or 'yaml', continued, last)
 end
 
 return table.freeze { render = render }

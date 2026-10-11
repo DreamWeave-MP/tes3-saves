@@ -301,11 +301,9 @@ writeSequenceItem = function(out: { string }, value: Value, indent: number)
   end
 end
 
---- A document with one list under `key`: `key:` and an item for each of `items`, or `key: []`.
-local function list(key: string, items: { Value }): string
-  if #items == 0 then return `{key}: []\n` end
-
-  local out = { `{key}:\n` }
+--- `items` as the items of a list at the top of a document, one after another.
+local function items(items: { Value }): string
+  local out: { string } = {}
   for _, item in items do
     writeSequenceItem(out, item, 0)
   end
@@ -313,4 +311,11 @@ local function list(key: string, items: { Value }): string
   return table.concat(out)
 end
 
-return table.freeze { floatText = floatText, list = list, quote = quote }
+--- A document with one list under `key`: `key:` and an item for each of `values`, or `key: []`.
+local function list(key: string, values: { Value }): string
+  if #values == 0 then return `{key}: []\n` end
+
+  return `{key}:\n{items(values)}`
+end
+
+return table.freeze { floatText = floatText, items = items, list = list, quote = quote }

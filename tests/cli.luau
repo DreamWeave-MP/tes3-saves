@@ -11,6 +11,7 @@ local disk = require './disk'
 local dumps = require './dumps'
 local fixtures = require './fixtures'
 local json = require '@jess/json'
+local plugins = require './plugins'
 local saves = require '@tes3-saves'
 local test = require '@jess/test'
 local expect = test.expect
@@ -981,6 +982,46 @@ suite.describe('render', function()
     expect(cli.render(result, { format = 'toml' })).toBe 'records = []\n'
   end)
 
+  suite.it('writes a dump in pages as the one document, started once and ended once', function()
+    local function page(records: { number }, next: number?): commands.DumpResult
+      local listed = {}
+      for position, index in records do
+        listed[position] = { record = index, type = 'GLOB' }
+      end
+
+      return { command = 'dump', path = 'Save.omwsave', mode = 'list', listed = listed, next = next }
+    end
+
+    --- The pages' documents joined, as a run writes them one after another.
+    local function written(pages: { commands.DumpResult }, format: cli.Format): string
+      local out = ''
+      for _, result in pages do
+        out ..= cli.render(result, { format = format, continued = out ~= '' })
+      end
+
+      return out
+    end
+
+    local whole = page({ 0, 1, 2, 3, 4 }, nil)
+    local pages = { page({ 0, 1 }, 2), page({ 2, 3 }, 4), page({ 4 }, nil) }
+    -- A page that looked through records and picked none, wherever it comes.
+    local sparse = { page({}, 2), page({ 0, 1 }, 4), page({}, 6), page({ 2, 3, 4 }, 8), page({}, nil) }
+    for _, format in { 'yaml', 'json' } do
+      expect(written(pages, format)).toBe(cli.render(whole, { format = format }))
+      expect(written(sparse, format)).toBe(cli.render(whole, { format = format }))
+      expect(written({ page({}, 2), page({}, nil) }, format)).toBe(
+        cli.render(page({}, nil), { format = format })
+      )
+    end
+
+    expect(cli.render(page({ 0, 1 }, 2), { format = 'json' })).toBe '{"records":[{"record":0,"type":"GLOB"},{"record":1,"type":"GLOB"}'
+    expect(cli.render(page({ 4 }, nil), { format = 'json', continued = true })).toBe ',{"record":4,"type":"GLOB"}]}\n'
+    expect(cli.render(page({ 4 }, nil), { format = 'yaml', continued = true })).toBe '- record: 4\n  type: GLOB\n'
+
+    -- TOML has no list a later page could carry on.
+    expect(function() cli.render(page({ 0 }, 1), { format = 'toml' }) end).toThrow 'a dump in TOML can\'t be written in pages'
+  end)
+
   suite.it('writes a byte layout as JSON unless a format is asked for', function()
     local result: commands.DumpResult = {
       command = 'dump',
@@ -1303,6 +1344,37 @@ suite.describe('run', function()
     } do
       expect(document).toContain(expected)
     end
+  end)
+
+  suite.it('dumps a long save a page at a time', function()
+    -- More records than one page holds: 600 globals after the header and the SAVE record.
+    local globals = {}
+    for index = 1, 600 do
+      globals[index] = plugins.record('GLOB', plugins.subrecord('NAME', fixtures.refId(`global_{index}`)))
+    end
+
+    local path = saved('cli-run-dump-pages', fixtures.save() .. table.concat(globals))
+    expect(cli.run { 'dump', '--list', '--type', 'GLOB', path }).toBe(0)
+    expect(cli.run { '--format', 'json', 'dump', '--raw', '--id', '^global_600$', path }).toBe(0)
+    expect(cli.run { '--format', 'toml', 'dump', '--list', '--id', '^global_1$', path }).toBe(0)
+
+    -- The document a run writes page by page is the one the whole dump renders as.
+    local request = parsed { 'dump', '--list', '--type', 'GLOB', path }
+    assert(request.command == 'dump')
+    local whole = cli.render(commands.dump(request.request), { format = request.format })
+    local page = table.clone(request.request)
+    page.limit = 256
+    local document, pages = '', 0
+    repeat
+      local result = commands.dump(page)
+      document ..= cli.render(result, { format = request.format, continued = document ~= '' })
+      page.from = result.next
+      pages += 1
+    until not result.next
+
+    expect(pages).toBe(3)
+    expect(document == whole).toBe(true)
+    expect(select(2, string.gsub(document, '\n%- record: ', ''))).toBe(600)
   end)
 
   suite.it('lists a save\'s records', function()
