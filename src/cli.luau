@@ -23,7 +23,8 @@
 This is a presentation of @tes3-saves/commands and nothing more. `parse` reads an argument list
 into the request the command of that name takes, touching no file; the commands module does the
 work; `render` is its result as the document `jess save` printed, in YAML, JSON, or TOML; `status`
-is the exit status that outcome had. `run` is the four in a row, with standard output and error.
+is the exit status that outcome had. `run` is the four in a row, with standard output and error;
+a dump it asks for a page at a time, writing each page's part of the document as it comes.
 
 The commands and their options are `jess save`'s, read off its clap definitions: the same names,
 short forms, defaults, and value syntax (`--name value` or `--name=value`, `-o value`, `-ovalue`,
