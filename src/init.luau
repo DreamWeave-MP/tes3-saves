@@ -8,9 +8,14 @@ describe themselves (metadata, screenshot, readable records, Lua data); OpenMW s
 validated, checked against a load order, and have content files stripped from them, with every
 rule jess-save applies. A load order is a `loadOrder` value: `loadOrder.fromOpenMw(context)` for
 an `@openmw` Context.
+
+Reports spell their codes and field names camelCase; `snakeCase` gives the spelling jess-save's
+JSON, YAML, and TOML have. `tree` is `values` with what plain tables drop: the order fields come
+in, and which numbers are floats.
 ]]
 
 local Check = require '@self/check'
+local Codes = require '@self/codes'
 local LoadOrder = require '@self/loadorder'
 local Read = require '@self/read'
 local Strip = require '@self/strip'
@@ -31,6 +36,11 @@ export type MissingContent = Check.MissingContent
 export type Validation = Check.Validation
 export type StripOptions = Strip.StripOptions
 export type Mode = Strip.Mode
+export type Node = Values.Node
+export type Fields = Values.Fields
+export type List = Values.List
+export type Float = Values.Float
+export type Null = Values.Null
 
 --- Removes `dependencies` (content file names, any order) from an OpenMW save, as `jess save
 --- strip` does: planned, applied, and verified in memory before anything is written. Unless it's a
@@ -66,7 +76,9 @@ return table.freeze {
   parse = Read.parse,
   recordId = recordId,
   screenshot = Read.screenshot,
+  snakeCase = Codes.snakeCase,
   strip = strip,
+  tree = Values.tree,
   validate = Check.validate,
   values = Values.values,
 }

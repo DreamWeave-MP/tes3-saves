@@ -8,6 +8,11 @@ The SAVE header and dynamic records (player-made spells, the player's NPC_, ...)
 values. Save-only records (PLAY, CSTA, JOUR, ...) have no typed model, so each subrecord gets its
 best-known decoding: ids and object references the classifiers understand, LUAD Lua data (its
 keys as they are), strings, and numbers, with hex or a byte count for the rest.
+
+A value is built as a tree (`tree`) and handed out as plain tables (`values`). The tree keeps
+what a plain table can't: the order fields come in (a record's subrecords, a Lua table's keys as
+the save has them), which numbers the save holds as floats, an empty table apart from an empty
+list, and the place of a value that is missing.
 ]]
 
 local Read = require './read'
@@ -18,6 +23,25 @@ local tes3 = require '@tes3'
 type Plugin = tes3.Plugin
 type Record = Records.Record
 type Save = Read.Save
+type LuaValue = tes3.LuaValue
+
+--- A missing value where one has a place: a float that isn't finite, which no format spells.
+export type Null = { kind: 'null' }
+
+--- A number the save holds as a float, whole or not.
+export type Float = { kind: 'float', value: number }
+
+export type List = { kind: 'list', items: { Node } }
+
+--- Named values in order: `keys[n]` names `values[n]`. `verbatim` keys are the save's own
+--- (subrecord tags, a Lua table's keys); the rest are field names, camelCase.
+export type Fields = { kind: 'map', keys: { string }, values: { Node }, verbatim: boolean? }
+
+--- A readable value. A plain number is a whole number, or one of a typed record's, which
+--- `@tes3` gives without saying whether the record holds it as a float.
+export type Node = string | number | boolean | Null | Float | List | Fields
+
+local Null: Null = table.freeze { kind = 'null' :: 'null' }
 
 --- Record types OpenMW writes as dynamic records with the regular content-record layout.
 local DynamicTagList = {
@@ -47,6 +71,237 @@ local DynamicTags: { [string]: boolean } = {}
 for _, tag in DynamicTagList do
   DynamicTags[tag] = true
 end
+
+--[[ Trees ]]
+
+local function list(items: { Node }): List return { kind = 'list' :: 'list', items = items } end
+
+--- Fields from `{ key, value }` pairs in order; a pair without a value is left out.
+local function fields(pairs: { { unknown } }, verbatim: boolean?): Fields
+  local keys: { string }, values: { Node } = {}, {}
+  for _, pair in pairs do
+    local value = pair[2] :: Node?
+    if value == nil then continue end
+
+    table.insert(keys, pair[1] :: string)
+    table.insert(values, value)
+  end
+
+  return { kind = 'map' :: 'map', keys = keys, values = values, verbatim = verbatim }
+end
+
+--- A float of the save; one that isn't finite has no spelling, and is missing.
+local function float(value: number): Node
+  if value ~= value or value == math.huge or value == -math.huge then return Null end
+
+  return { kind = 'float' :: 'float', value = value }
+end
+
+local function floats(numbers: { number }, first: number, last: number): List
+  local items: { Node } = {}
+  for position = first, last do
+    table.insert(items, float(numbers[position]))
+  end
+
+  return list(items)
+end
+
+--- The fields a typed value starts with, in order; the rest follow by name.
+local Leading = { 'record', 'type', 'id', 'name' }
+
+--- A plain value of `@tes3`'s as a tree. Its tables don't say what order their fields come in, so
+--- a record's number, type, id, and name go first and the rest by name.
+local function fromPlain(value: unknown): Node
+  if type(value) ~= 'table' then
+    if type(value) == 'string' or type(value) == 'number' or type(value) == 'boolean' then
+      return value
+    end
+
+    return Null
+  end
+
+  local members = value :: { [unknown]: unknown }
+  if members[1] ~= nil or next(members) == nil then
+    local items: { Node } = {}
+    for position, item in members :: { unknown } do
+      items[position] = fromPlain(item)
+    end
+
+    return list(items)
+  end
+
+  local names: { string } = {}
+  local byName: { [string]: unknown } = {}
+  for key, item in members do
+    local name = tostring(key)
+    byName[name] = item
+    if not table.find(Leading, name) then table.insert(names, name) end
+  end
+
+  table.sort(names)
+  local keys: { string }, nodes: { Node } = {}, {}
+  for _, name in Leading do
+    if byName[name] == nil then continue end
+
+    table.insert(keys, name)
+    table.insert(nodes, fromPlain(byName[name]))
+  end
+
+  for _, name in names do
+    table.insert(keys, name)
+    table.insert(nodes, fromPlain(byName[name]))
+  end
+
+  return { kind = 'map' :: 'map', keys = keys, values = nodes }
+end
+
+--- A tree as plain tables: fields by key, lists as arrays, floats as numbers, and a missing value
+--- as nil.
+local function plain(node: Node): unknown
+  if type(node) ~= 'table' then return node end
+
+  if node.kind == 'null' then return nil end
+
+  if node.kind == 'float' then return node.value end
+
+  if node.kind == 'list' then
+    local out: { unknown } = {}
+    for position, item in node.items do
+      out[position] = plain(item)
+    end
+
+    return out
+  end
+
+  local out: { [string]: unknown } = {}
+  for position, key in node.keys do
+    out[key] = plain(node.values[position])
+  end
+
+  return out
+end
+
+--[[ Lua data ]]
+
+--- A number as a key, the way `@tes3`'s display spells one (serde_json's): an exact integer
+--- without a fraction, else its shortest digits.
+local function numberKey(value: number): string
+  if value % 1 == 0 and math.abs(value) <= 2 ^ 53 then return string.format('%d', value) end
+
+  for precision = 1, 17 do
+    local text = string.format(`%.{precision}g`, value)
+    if tonumber(text) == value then return text end
+  end
+
+  return tostring(value)
+end
+
+--- Lua has one number type: a whole one reads as a whole number, any other as a float.
+local function luaNumber(value: number): Node
+  if value % 1 == 0 and math.abs(value) <= 2 ^ 53 then return value end
+
+  return float(value)
+end
+
+local function refnum(ref: tes3.LuaRef): Fields
+  return fields({ { 'index', ref.index }, { 'content_file', ref.contentFile } }, true)
+end
+
+local Vectors: { [string]: string } = {
+  vec2 = 'vec2',
+  vec3 = 'vec3',
+  vec4 = 'vec4',
+  transformM = 'matrix',
+  transformQ = 'quat',
+  color = 'color',
+}
+
+--- A decoded Lua value as `@tes3`'s display shows one with its keys kept (`display.luaValue`),
+--- with what that loses: a table's keys in the order the save has them. Tables keyed 1 to n are
+--- lists, other tables fields under text keys, and userdata one field naming its type.
+local function luaNode(value: LuaValue): Node
+  local kind = value.kind
+  if kind == 'nil' then return Null end
+
+  if kind == 'number' then return luaNumber(value.value :: number) end
+
+  if kind == 'boolean' then return value.value :: boolean end
+
+  if kind == 'string' then return tes3.lossyUtf8(value.value :: string) end
+
+  if kind == 'table' then
+    local entries = value.entries or {}
+    local isList = #entries > 0
+    for position, entry in entries do
+      if entry.key.kind ~= 'number' or entry.key.value ~= position then
+        isList = false
+        break
+      end
+    end
+
+    if isList then
+      local items: { Node } = table.create(#entries)
+      for position, entry in entries do
+        items[position] = luaNode(entry.value)
+      end
+
+      return list(items)
+    end
+
+    local keys: { string }, nodes: { Node } = {}, {}
+    local places: { [string]: number } = {}
+    for _, entry in entries do
+      local key = entry.key
+      local text = if key.kind == 'string'
+        then tes3.lossyUtf8(key.value :: string)
+        elseif key.kind == 'number' then numberKey(key.value :: number)
+        elseif key.kind == 'boolean' then tostring(key.value)
+        else key.kind
+      -- Two keys that spell alike share the first one's place; the later value is the one kept.
+      local place = places[text]
+      if not place then
+        place = #keys + 1
+        places[text] = place
+        keys[place] = text
+      end
+
+      nodes[place] = luaNode(entry.value)
+    end
+
+    return { kind = 'map' :: 'map', keys = keys, values = nodes, verbatim = true }
+  end
+
+  if kind == 'object' then
+    return fields({ { 'object', refnum(value.ref :: tes3.LuaRef) } }, true)
+  end
+
+  if kind == 'objectList' then
+    local items: { Node } = {}
+    for _, ref in value.refs or {} do
+      table.insert(items, refnum(ref))
+    end
+
+    return fields({ { 'objlist', list(items) } }, true)
+  end
+
+  if kind == 'userdata' then
+    return fields({ { value.typeName :: string, `{#(value.data or '')} bytes` } }, true)
+  end
+
+  local components = value.values or {}
+  return fields({ { Vectors[kind], floats(components, 1, #components) } }, true)
+end
+
+--- A LUAD payload decoded, or its size and why it doesn't decode.
+local function luaPayload(source: buffer, offset: number, length: number): Node
+  -- decodeLuaData throws on a payload that doesn't decode; that's what's shown instead.
+  local ok, value = pcall(tes3.save.decodeLuaData, source, offset, length)
+  if ok then return luaNode(value :: LuaValue) end
+
+  return `{length} bytes, undecodable: {value}`
+end
+
+--[[ Subrecords ]]
 
 --- Whether every byte is printable text (or a tab or line break); a trailing NUL is left out.
 local function printable(data: string): string?
@@ -78,27 +333,21 @@ local function typedRefIdText(data: string): string?
   return tes3.save.refIdText(id)
 end
 
-local function floatValue(value: number): number?
-  if value ~= value or value == math.huge or value == -math.huge then return nil end
-
-  return value
-end
-
 --- Four bytes are usually an i32 count or flag, or an f32; a float's bit pattern reads as a huge int.
-local function fourByteNumber(data: string): number?
+local function fourByteNumber(data: string): Node
   local int = Records.i32At(data)
   if math.abs(int) < 1000000 then return int end
 
-  local float = Records.f32At(data)
-  if float == float and math.abs(float) >= 1e-4 and math.abs(float) < 1e8 then
-    return floatValue(float)
+  local value = Records.f32At(data)
+  if value == value and math.abs(value) >= 1e-4 and math.abs(value) < 1e8 then
+    return float(value)
   end
 
   return int
 end
 
 --- Best-effort decoding of a subrecord no classifier knows.
-local function genericValue(data: string): unknown
+local function genericValue(data: string): Node
   local text = typedRefIdText(data) or printable(data)
   if text then return text end
 
@@ -117,34 +366,31 @@ local function genericValue(data: string): unknown
 end
 
 --- A placement (CellRef DATA, object POS_, door DODT): three position then three rotation f32s.
-local function placement(data: string): unknown
+local function placement(data: string): Node?
   if #data ~= 24 then return nil end
 
-  local values = {}
+  local numbers = {}
   for index = 0, 5 do
-    values[index + 1] = Records.f32At(data, 1 + index * 4)
+    numbers[index + 1] = Records.f32At(data, 1 + index * 4)
   end
 
-  return {
-    position = { floatValue(values[1]), floatValue(values[2]), floatValue(values[3]) },
-    rotation = { floatValue(values[4]), floatValue(values[5]), floatValue(values[6]) },
-  }
+  return fields { { 'position', floats(numbers, 1, 3) }, { 'rotation', floats(numbers, 4, 6) } }
 end
 
 --- EQIP: a u32 count, then (u32 inventory item index, u32 equipment slot) pairs.
-local function equipment(data: string): unknown
+local function equipment(data: string): Node?
   if #data < 4 then return nil end
 
   local count = Records.u32At(data)
   if #data - 4 ~= count * 8 then return nil end
 
-  local out = {}
+  local items: { Node } = {}
   for index = 0, count - 1 do
     local item, slot = Records.u32At(data, 5 + index * 8), Records.u32At(data, 9 + index * 8)
-    table.insert(out, `item {item} in slot {slot}`)
+    table.insert(items, `item {item} in slot {slot}`)
   end
 
-  return out
+  return list(items)
 end
 
 --- NPCO: an i32 count followed by the item id.
@@ -176,6 +422,8 @@ local function referenceValue(
 
   return `{localIndex} ({source})`
 end
+
+--[[ Typed records ]]
 
 --- Save records store ids as typed RefIds; typed record decoders read them as plain strings.
 local function cleanRefIds(value: unknown): unknown
@@ -251,7 +499,7 @@ local function pluginLayout(plugin: Plugin, index: number, record: Record): stri
     .. payload
 end
 
-local function typedContentValue(plugin: Plugin, index: number, record: Record): unknown
+local function typedContentValue(plugin: Plugin, index: number, record: Record): Node?
   local bytes = pluginLayout(plugin, index, record)
   if not bytes then return nil end
 
@@ -266,8 +514,13 @@ local function typedContentValue(plugin: Plugin, index: number, record: Record):
     shown.record = index
     return cleanRefIds(shown)
   end)
-  return if ok then value else nil
+
+  if not ok or value == nil then return nil end
+
+  return fromPlain(value)
 end
+
+--[[ Records ]]
 
 local function isObjectState(record: Record): boolean
   return record.tag == 'CSTA' or record.tag == 'PLAY'
@@ -275,8 +528,8 @@ end
 
 type Indexes = { contentFiles: { string }, luaScripts: { string } }
 
-local function subrecordsValue(record: Record, indexes: Indexes): unknown
-  local subrecords = {}
+local function subrecordsValue(record: Record, indexes: Indexes): Node
+  local subrecords: { Node } = {}
   local inventoryItemsRemaining = 0
   for position = 0, #record.subs - 1 do
     local tag = Records.tagAt(record, position) :: string
@@ -288,10 +541,10 @@ local function subrecordsValue(record: Record, indexes: Indexes): unknown
       inventoryItemsRemaining = math.max(inventoryItemsRemaining - 1, 0)
     end
 
-    local value: unknown = nil
+    local value: Node? = nil
     local subrecord = record.subs[position + 1]
     if tag == 'LUAD' then
-      value = tes3.display.luaPayload(record.source, subrecord.payload, subrecord.size, true)
+      value = luaPayload(record.source, subrecord.payload, subrecord.size)
     elseif tag == 'LUAS' and #data == 4 then
       local id = Records.i32At(data)
       local path = if id >= 0 then indexes.luaScripts[id + 1] else nil
@@ -320,18 +573,71 @@ local function subrecordsValue(record: Record, indexes: Indexes): unknown
 
     if value == nil then value = genericValue(data) end
 
-    table.insert(subrecords, { [tag] = value })
+    table.insert(subrecords, fields({ { tag, value } }, true))
   end
 
-  return { record = record.index, type = record.tag, subrecords = subrecords }
+  return fields {
+    { 'record', record.index },
+    { 'type', record.tag },
+    { 'subrecords', list(subrecords) },
+  }
 end
 
---- Every record's readable value, as `jess save dump` shows it: OpenMW saves give typed values for
---- the SAVE header and dynamic records and a subrecord list otherwise; Morrowind saves give the
+local function strings(items: { string }): List
+  local nodes: { Node } = table.create(#items)
+  for position, item in items do
+    nodes[position] = item
+  end
+
+  return list(nodes)
+end
+
+--- The save's metadata as the header record's value: jess-save's `SaveInfo`, field for field in
+--- its order, under the record's number and `SaveHeader`.
+local function headerValue(index: number, info: Read.Info): Node
+  local player = info.player
+  local time = info.inGameTime
+
+  return fields {
+    { 'record', index },
+    { 'type', 'SaveHeader' },
+    { 'format', info.format },
+    { 'formatVersion', info.formatVersion },
+    { 'description', info.description },
+    {
+      'player',
+      fields {
+        { 'name', player.name },
+        { 'level', player.level },
+        { 'classId', player.classId },
+        { 'className', player.className },
+      },
+    },
+    { 'cell', info.cell },
+    {
+      'inGameTime',
+      fields {
+        { 'gameHour', float(time.gameHour) },
+        { 'day', time.day },
+        { 'month', time.month },
+        { 'year', time.year },
+      },
+    },
+    { 'timePlayed', info.timePlayed and float(info.timePlayed) },
+    { 'dependencies', strings(info.dependencies) },
+    { 'screenshotBytes', info.screenshotBytes },
+    { 'currentDay', info.currentDay },
+    { 'currentHealth', info.currentHealth and float(info.currentHealth) },
+    { 'maximumHealth', info.maximumHealth and float(info.maximumHealth) },
+  }
+end
+
+--- What gives record `index`'s readable value for `save`: OpenMW saves give typed values for the
+--- SAVE header and dynamic records and a subrecord list otherwise; Morrowind saves give the
 --- header's metadata, then typed values for the record types jess models.
-local function values(save: Save): { unknown }
+local function reader(save: Save): (index: number) -> Node
   local plugin = save.plugin
-  local headerTag = if save.game == 'openmw' then 'SAVE' else 'TES3'
+  local headerCode = tes3.tags.code(if save.game == 'openmw' then 'SAVE' else 'TES3')
   local unnamed: Save = { plugin = plugin, game = save.game, name = '' }
   -- info throws on metadata that doesn't read; the header record is then shown like any other.
   local ok, header = pcall(Read.info, unnamed)
@@ -344,13 +650,12 @@ local function values(save: Save): { unknown }
         table.insert(indexes.contentFiles, master.name)
       end
     end
-  end
 
-  local records = Records.all(plugin)
-  if save.game == 'openmw' then
-    for _, record in records do
-      if record.tag ~= 'LUAM' then continue end
+    local luamCode = tes3.tags.code 'LUAM'
+    for index = 0, plugin:count() - 1 do
+      if plugin:code(index) ~= luamCode then continue end
 
+      local record = Records.record(plugin, index)
       for position = 0, #record.subs - 1 do
         if Records.tagAt(record, position) ~= 'LUAP' then continue end
 
@@ -362,34 +667,53 @@ local function values(save: Save): { unknown }
     end
   end
 
-  local out = table.create(#records)
-  for slot, record in records do
-    local index = slot - 1
-    if record.tag == headerTag and ok then
-      local value = table.clone(header :: { [string]: unknown })
-      value.record = index
-      value.type = 'SaveHeader'
-      out[slot] = value
-      continue
+  return function(index: number): Node
+    if plugin:code(index) == headerCode and ok then
+      return headerValue(index, header :: Read.Info)
     end
 
-    if save.game == 'morrowind' then
-      out[slot] = tes3.display.display(plugin, index)
-      continue
-    end
+    if save.game == 'morrowind' then return fromPlain(tes3.display.display(plugin, index)) end
 
+    local record = Records.record(plugin, index)
     if DynamicTags[record.tag] or record.tag == 'GLOB' then
       local typed = typedContentValue(plugin, index, record)
-      if typed then
-        out[slot] = typed
-        continue
-      end
+      if typed then return typed end
     end
 
-    out[slot] = subrecordsValue(record, indexes)
+    return subrecordsValue(record, indexes)
+  end
+end
+
+--- The readable values of records `indices` (0-based; every record without them) as trees, in
+--- that order: what `values` gives, with the order of each value's fields, the floats, and the
+--- missing values a plain table doesn't keep.
+local function tree(save: Save, indices: { number }?): { Node }
+  local read = reader(save)
+  local out: { Node } = {}
+  if indices then
+    for position, index in indices do
+      out[position] = read(index)
+    end
+
+    return out
+  end
+
+  for index = 0, save.plugin:count() - 1 do
+    out[index + 1] = read(index)
   end
 
   return out
 end
 
-return table.freeze { values = values }
+--- Every record's readable value, as `jess save dump` shows it.
+local function values(save: Save): { unknown }
+  local read = reader(save)
+  local out = table.create(save.plugin:count())
+  for index = 0, save.plugin:count() - 1 do
+    out[index + 1] = plain(read(index))
+  end
+
+  return out
+end
+
+return table.freeze { plain = plain, reader = reader, tree = tree, values = values }
