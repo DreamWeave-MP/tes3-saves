@@ -7,7 +7,8 @@ Removing content files from an OpenMW save (jess-save's `strip`, `plan`, `plan_o
 `plan_readiness`, `mutate`, and `verify`): plan each removal, apply it in memory, verify the
 result, and only then write. Every field the engine can't drop on its own is fixed or refused;
 `docs/save-strip.md` has the rules and their engine sources. Reports are shaped as `jess save
-strip` prints them in Luau: keys and codes camelCase.
+strip` prints them in Luau: keys and codes camelCase, or the codes as jess-save spells them when
+asked (`originalCodes`).
 ]]
 
 local Check = require './check'
@@ -25,13 +26,19 @@ type Save = Read.Save
 --- A count map: how many a scan found of each role, meaning, or record type, by its name.
 type Counts = { [string]: number }
 
-local camelCase = tes3.text.camelCase
+--- How a report spells a code. jess-save's codes are the data, as its sources spell them
+--- (`dry_run_only`, `in-place`, `OpenMW maps save FormIds through TES3_MAST_not_SAVE_DEPE`);
+--- a report has them camelCase for Luau unless it is asked for them as they are, and nothing
+--- has to work its way back from one spelling to the other.
+type Spell = (code: string) -> string
 
---- `camelCase` for each key of a count map.
-local function camelKeys(counts: Counts): Counts
+local function asWritten(code: string): string return code end
+
+--- Each key of a count map, spelled.
+local function spellKeys(counts: Counts, spell: Spell): Counts
   local out: Counts = {}
   for key, count in counts do
-    out[camelCase(key)] = count
+    out[spell(key)] = count
   end
 
   return out
@@ -767,7 +774,8 @@ export type ReferenceScan = {
 local function saveReferences(
   records: { Record },
   provenance: Provenance,
-  limit: number
+  limit: number,
+  spell: Spell
 ): ReferenceScan
   local total = 0
   local byRole: Counts, byMeaning: Counts, byRecordType: Counts = {}, {}, {}
@@ -795,8 +803,8 @@ local function saveReferences(
         subrecordIndex = position,
         subrecordType = Records.tagAt(record, position),
         refId = field.id,
-        meaning = camelCase(meaning),
-        provenanceRole = camelCase(role),
+        meaning = spell(meaning),
+        provenanceRole = spell(role),
         firstDefinedBy = formatOccurrence(
           provenance,
           provenance.firstAt[token],
@@ -816,10 +824,10 @@ local function saveReferences(
     total = total,
     byRole = byRole,
     report = {
-      confidence = 'knownOpenmwRefidFields',
+      confidence = spell 'known_openmw_refid_fields',
       total = total,
-      byProvenanceRole = camelKeys(byRole),
-      byMeaning = camelKeys(byMeaning),
+      byProvenanceRole = spellKeys(byRole, spell),
+      byMeaning = spellKeys(byMeaning, spell),
       byRecordType = byRecordType,
       samples = samples,
     },
@@ -831,7 +839,8 @@ local function contentFileReferences(
   hits: { Scan.Hit },
   index: number,
   dependency: string,
-  limit: number
+  limit: number,
+  spell: Spell
 ): { [string]: unknown }
   local total = 0
   local byMeaning: Counts, byRecordType: Counts = {}, {}
@@ -848,7 +857,7 @@ local function contentFileReferences(
         recordType = hit.record.tag,
         subrecordIndex = hit.subrecord,
         subrecordType = Records.tagAt(hit.record, hit.subrecord),
-        meaning = camelCase(hit.meaning),
+        meaning = spell(hit.meaning),
         contentFileIndex = hit.contentFile,
         localIndex = hit.localIndex,
         dependency = dependency,
@@ -857,9 +866,9 @@ local function contentFileReferences(
   end
 
   return {
-    confidence = 'knownOpenmwFormidAndLuaRefnumFields',
+    confidence = spell 'known_openmw_formid_and_lua_refnum_fields',
     total = total,
-    byMeaning = camelKeys(byMeaning),
+    byMeaning = spellKeys(byMeaning, spell),
     byRecordType = byRecordType,
     samples = samples,
   }
@@ -1724,7 +1733,7 @@ local function verifyPostMutation(
 
   return {
     status = 'verified',
-    reason = 'noKnownRemovedDependencyReferencesRemain',
+    reason = 'no_known_removed_dependency_references_remain',
     knownRemainingTargetRefids = 0,
     invalidContentFileRefnums = 0,
   }
@@ -1773,30 +1782,30 @@ end
 
 --[[ Reports ]]
 
-local function concernReport(concerns: { Concern }): { { [string]: unknown } }
+local function concernReport(concerns: { Concern }, spell: Spell): { { [string]: unknown } }
   local out: { { [string]: unknown } } = {}
   for _, concern in concerns do
     out[#out + 1] =
-      { kind = camelCase(concern.kind), count = concern.count, action = camelCase(concern.action) }
+      { kind = spell(concern.kind), count = concern.count, action = spell(concern.action) }
   end
 
   return out
 end
 
-local function editReport(edit: Edit): { [string]: unknown }
+local function editReport(edit: Edit, spell: Spell): { [string]: unknown }
   return {
-    operation = camelCase(edit.operation),
-    status = camelCase(edit.status),
+    operation = spell(edit.operation),
+    status = spell(edit.status),
     recordIndex = edit.recordIndex,
     recordType = edit.recordType,
     subrecordIndex = edit.subrecordIndex,
     subrecordEndIndex = edit.subrecordEndIndex,
     subrecordType = edit.subrecordType,
-    meaning = if edit.meaning then camelCase(edit.meaning) else nil,
+    meaning = if edit.meaning then spell(edit.meaning) else nil,
     localIndex = edit.localIndex,
     oldContentFileIndex = edit.oldContentFileIndex,
     newContentFileIndex = edit.newContentFileIndex,
-    reason = camelCase(edit.reason),
+    reason = spell(edit.reason),
   }
 end
 
@@ -1818,10 +1827,14 @@ export type StripOptions = {
   sampleLimit: number?,
   --- Back up a file the strip writes over (the default).
   backup: boolean?,
+  --- Spell the report's codes as jess-save's own reports do (`dry_run_only`, `in-place`) instead
+  --- of camelCase: what anything that writes its files needs. Field names stay camelCase.
+  originalCodes: boolean?,
 }
 
+--- Each mode as jess-save's reports name it.
 local ModeNames: { [Mode]: string } =
-  { dryRun = 'dryRun', inMemory = 'inMemory', inPlace = 'inPlace', output = 'output' }
+  { dryRun = 'dry-run', inMemory = 'in-memory', inPlace = 'in-place', output = 'output' }
 
 --- Removes `dependencies` from `save`, latest in the load order first. Every removal is applied and
 --- verified in memory before anything is written; if any is blocked, nothing is written. Returns the
@@ -1836,6 +1849,7 @@ local function strip(
   local mode: Mode = given.mode
     or (if given.output then 'output' elseif save.path then 'inPlace' else 'inMemory')
   local limit = given.sampleLimit or 5
+  local spell: Spell = if given.originalCodes then asWritten else tes3.text.camelCase
   local order = given.loadOrder
   local encoding = save.plugin.encoding
   local openOptions: tes3.OpenOptions = { encoding = encoding, profile = save.plugin.profile }
@@ -1948,9 +1962,9 @@ local function strip(
     )
     local format = formatSupport(metadata.formatVersion)
     local edits = plannedEdits(plugin, records, index, dependency, provenance)
-    local references = if provenance then saveReferences(records, provenance, limit) else nil
+    local references = if provenance then saveReferences(records, provenance, limit, spell) else nil
     local hits = Scan.contentFileHits(records)
-    local fileReferences = contentFileReferences(hits, index, dependency, limit)
+    local fileReferences = contentFileReferences(hits, index, dependency, limit, spell)
     local coverage = Scan.coverage(records)
     local blockers = blockersOf(format, provenance, coverage, references, edits)
     local remapping = index + 1 < #deps
@@ -1974,22 +1988,31 @@ local function strip(
       dryRun = {
         requested = dryRunRequested,
         status = 'verified',
-        reason = 'inMemoryMutationReparsedSuccessfully',
-        output = if written then 'writtenToOutput' else 'inMemoryOnly',
+        reason = spell 'in_memory_mutation_reparsed_successfully',
+        output = spell(if written then 'written_to_output' else 'in_memory_only'),
         appliedEdits = execution.appliedEdits,
         bytesBefore = execution.bytesBefore,
         bytesAfter = execution.bytesAfter,
         verification = 'reparsed',
-        postMutationVerification = execution.post,
+        postMutationVerification = {
+          status = spell(execution.post.status),
+          reason = spell(execution.post.reason),
+          knownRemainingTargetRefids = execution.post.knownRemainingTargetRefids,
+          invalidContentFileRefnums = execution.post.invalidContentFileRefnums,
+        },
       }
     elseif not dryRunRequested and not written then
-      dryRun =
-        { requested = false, status = 'notRequested', reason = 'dryRunFlagNotSet', output = 'none' }
+      dryRun = {
+        requested = false,
+        status = spell 'not_requested',
+        reason = spell 'dry_run_flag_not_set',
+        output = 'none',
+      }
     else
       dryRun = {
         requested = dryRunRequested,
         status = 'blocked',
-        reason = camelCase(readiness.reason),
+        reason = spell(readiness.reason),
         output = 'none',
       }
     end
@@ -2018,22 +2041,22 @@ local function strip(
 
     local edited = {}
     for _, edit in edits do
-      table.insert(edited, editReport(edit))
+      table.insert(edited, editReport(edit, spell))
     end
 
     local planned = {}
     for _, operation in operations do
       table.insert(planned, {
-        name = camelCase(operation.name),
-        status = camelCase(operation.status),
+        name = spell(operation.name),
+        status = spell(operation.status),
         count = operation.count,
-        reason = camelCase(operation.reason),
+        reason = spell(operation.reason),
       })
     end
 
     table.insert(steps, {
       dependency = dependency,
-      mode = ModeNames[mode],
+      mode = spell(ModeNames[mode]),
       dependencyIndex = index,
       dependenciesBefore = #deps,
       dependenciesAfter = #deps - 1,
@@ -2042,8 +2065,8 @@ local function strip(
         formatVersion = format.formatVersion,
         engineMinSupported = format.engineMinSupported,
         engineCurrent = format.engineCurrent,
-        mutationStatus = camelCase(format.mutationStatus),
-        reason = camelCase(format.reason),
+        mutationStatus = spell(format.mutationStatus),
+        reason = spell(format.reason),
       },
       targetResolution = targetResolution,
       targetRecords = targetScan,
@@ -2051,11 +2074,11 @@ local function strip(
       saveReferences = references and references.report,
       contentFileReferences = fileReferences,
       referenceCoverage = {
-        status = camelCase(coverage.status),
+        status = spell(coverage.status),
         knownScans = (function()
           local scans = {}
           for _, scan in coverage.knownScans do
-            table.insert(scans, camelCase(scan))
+            table.insert(scans, spell(scan))
           end
 
           return scans
@@ -2064,24 +2087,24 @@ local function strip(
       },
 
       blockers = {
-        status = camelCase(blockers.status),
-        hard = concernReport(blockers.hard),
-        informational = concernReport(blockers.informational),
-        protected = concernReport(blockers.protected),
+        status = spell(blockers.status),
+        hard = concernReport(blockers.hard, spell),
+        informational = concernReport(blockers.informational, spell),
+        protected = concernReport(blockers.protected, spell),
       },
       plannedOperations = planned,
       plannedEdits = edited,
       mutationReadiness = {
-        status = camelCase(readiness.status),
+        status = spell(readiness.status),
         canAttemptDryRun = readiness.canAttemptDryRun,
-        reason = camelCase(readiness.reason),
-        referenceCoverage = camelCase(readiness.referenceCoverage),
+        reason = spell(readiness.reason),
+        referenceCoverage = spell(readiness.referenceCoverage),
       },
       dryRun = dryRun,
       mutation = if written and execution
         then 'written'
-        elseif dryRunRequested then 'dryRunOnly'
-        else 'notRequested',
+        elseif dryRunRequested then spell 'dry_run_only'
+        else spell 'not_requested',
       warnings = warnings,
     })
 

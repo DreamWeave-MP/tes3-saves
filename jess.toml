@@ -6,7 +6,7 @@ version = "0.1.0"
 jess_api = "1"
 default_target = "tes3-saves"
 include = ["src"]
-tests = ["tests/run.luau", "tests/tree.luau", "tests/commands.luau", "tests/cli.luau", "tests/strip.luau", "tests/style.luau"]
+tests = ["tests/run.luau", "tests/tree.luau", "tests/codes.luau", "tests/commands.luau", "tests/cli.luau", "tests/strip.luau", "tests/style.luau"]
 
 # tes3 is what a save is made of. openmw is here for the commands alone: `check` and `strip` are
 # given a configuration by its path and need the load order it describes; @tes3-saves itself

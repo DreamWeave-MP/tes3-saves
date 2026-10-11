@@ -19,7 +19,12 @@ type Plugin = tes3.Plugin
 type Record = Records.Record
 type Save = Read.Save
 
-local camelCase = tes3.text.camelCase
+--- How a report spells a code: camelCase for Luau, or as jess-save's sources spell it
+--- (`will_not_load`), which is what anything that writes its files needs. Either way the code
+--- is spelled once, from jess-save's own, and never worked back from the other spelling.
+type Spell = (code: string) -> string
+
+local function asWritten(code: string): string return code end
 
 --- Record types OpenMW writes as dynamic records (player-made spells, potions, the player).
 local DynamicTagList = {
@@ -118,10 +123,18 @@ end
 
 export type Validation = { checks: { string }, diagnostics: { tes3.Diagnostic } }
 
+--- What `validate` checks, as jess-save names each (its `VALIDATE_CHECKS`).
+local ValidateChecks = { 'structure', 'save_metadata', 'save_format', 'cell_state' }
+
 --- Checks an OpenMW save's own structure without a load order: the file's framing, a readable
 --- SAVE header, a format version OpenMW loads, and cell state laid out the way the engine reads it.
-local function validate(plugin: Plugin): Validation
-  local checks = { 'structure', 'saveMetadata', 'saveFormat', 'cellState' }
+--- `checks` names them camelCase, or with `originalCodes` as jess-save does.
+local function validate(plugin: Plugin, originalCodes: boolean?): Validation
+  local checks = {}
+  for position, name in ValidateChecks do
+    checks[position] = if originalCodes then name else tes3.text.camelCase(name)
+  end
+
   local diagnostics = plugin:validateProfile 'omwsave'
   -- profile throws on metadata that doesn't read; that's the finding.
   local ok, problem = pcall(tes3.save.profile, plugin)
@@ -290,7 +303,8 @@ local function scanReferences(
   records: { Record },
   known: { [number]: boolean },
   ids: LoadOrder.Pool,
-  encoding: string
+  encoding: string,
+  spell: Spell
 ): ({ Finding }, { [string]: number })
   local findings: { Finding } = {}
   local dropped: { [string]: number } = {}
@@ -304,8 +318,8 @@ local function scanReferences(
     local severity, problem = assess(record, position, field.meaning)
     if severity then
       table.insert(findings, {
-        severity = camelCase(severity),
-        problem = camelCase(problem),
+        severity = spell(severity),
+        problem = spell(problem),
         id = field.id,
         recordIndex = record.index,
         recordType = record.tag,
@@ -313,7 +327,7 @@ local function scanReferences(
         subrecordType = Records.tagAt(record, position) :: string,
       })
     else
-      local key = camelCase(field.meaning)
+      local key = spell(field.meaning)
       dropped[key] = (dropped[key] or 0) + 1
     end
   end
@@ -374,12 +388,16 @@ export type CheckOptions = {
   loadOrder: LoadOrder.LoadOrder?,
   --- Why the load order couldn't be had, reported as a warning (a config that failed to load).
   loadOrderError: string?,
+  --- Spell the verdict, severities, problems, and kinds of dropped reference as jess-save's own
+  --- reports do (`will_not_load`) instead of camelCase. Field names stay camelCase.
+  originalCodes: boolean?,
 }
 
 --- Whether `save` loads with `options.loadOrder`, as it is in memory.
 local function check(save: Save, options: CheckOptions?): Check
   Read.requireOpenMw(save, 'check')
   local given: CheckOptions = options or {}
+  local spell: Spell = if given.originalCodes then asWritten else tes3.text.camelCase
   local plugin = save.plugin
   -- profile throws on metadata that doesn't read; the error to report names the save.
   local ok, profile = pcall(tes3.save.profile, plugin)
@@ -456,30 +474,31 @@ local function check(save: Save, options: CheckOptions?): Check
     local encoding = order.encoding or plugin.encoding
     local ids = LoadOrder.pool()
     local known = knownIds(records, order, encoding, warnings, ids)
-    findings, dropped = scanReferences(records, known, ids, encoding)
+    findings, dropped = scanReferences(records, known, ids, encoding, spell)
   end
 
   local function has(severity: string): boolean
+    local spelled = spell(severity)
     for _, finding in findings do
-      if finding.severity == severity then return true end
+      if finding.severity == spelled then return true end
     end
 
     return false
   end
 
   local verdict = if #problems > 0
-    then 'invalidStructure'
-    elseif has 'willNotLoad' then 'willNotLoad'
-    elseif has 'broken' then 'brokenState'
-    elseif #missing > 0 or #findings > 0 then 'loadsWithWarnings'
-    elseif order then 'loadsCleanly'
-    else 'structureValid'
+    then 'invalid_structure'
+    elseif has 'will_not_load' then 'will_not_load'
+    elseif has 'broken' then 'broken_state'
+    elseif #missing > 0 or #findings > 0 then 'loads_with_warnings'
+    elseif order then 'loads_cleanly'
+    else 'structure_valid'
 
   local version = metadata.formatVersion
   return {
     input = save.name,
-    verdict = verdict,
-    loads = verdict ~= 'invalidStructure' and verdict ~= 'willNotLoad',
+    verdict = spell(verdict),
+    loads = verdict ~= 'invalid_structure' and verdict ~= 'will_not_load',
     formatVersion = version,
     strippableFormat = version >= tes3.save.MinMutationFormatVersion
       and version <= tes3.save.CurrentFormatVersion,

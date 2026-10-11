@@ -5,12 +5,16 @@
 --[[
 A command's result as the text `jess save` printed for it: one YAML, JSON, or TOML document.
 
-A result is Luau's: its tables have no order, its field names and codes are camelCase, and its
-numbers don't say whether they are floats. The document is serde's: jess-save's report structs
-field by field in their order, names and codes in snake_case (`will_not_load`), a strip's `mode`
-in kebab-case (`dry-run`), counts sorted by name, a field that has no value left out, and an f32
-in an f32's digits. Each report's shape below is the struct it was (`SaveInfo`, `SaveCheck`,
-`SaveStripReport`, the layouts); `@vfs/serialize` writes the three formats as serde did.
+A result is Luau's: its tables have no order, its field names are camelCase, and its numbers
+don't say whether they are floats. The document is serde's: jess-save's report structs field by
+field in their order under their own snake_case names, counts sorted by name, a field that has
+no value left out, and an f32 in an f32's digits. Each report's shape below is the struct it was
+(`SaveInfo`, `SaveCheck`, `SaveStripReport`, the layouts), its fields declared under the names
+jess-save gave them; the name a result has a field under is that name camelCased, never the
+other way about. `@vfs/serialize` writes the three formats as serde did.
+
+Codes (`will_not_load`, `dry-run`, a strip's reasons) are not this module's to spell: the
+commands hand them over as jess-save's sources have them, and they are written as they come.
 
 A dump is a list under `records`. Its YAML is jess's own (`./dumpyaml`), and a byte layout is
 JSON unless a format is asked for. jess wrote a dump's records as it read them, and a dump in
@@ -19,11 +23,11 @@ starting it and the last (the one without a `next`) ending it. TOML has no list 
 carried on, so a dump in TOML is one result.
 ]]
 
-local Codes = require './codes'
 local Commands = require './commands'
 local DumpYaml = require './dumpyaml'
 local Values = require './values'
 local serialize = require '@vfs/serialize'
+local tes3 = require '@tes3'
 
 type Value = serialize.Value
 
@@ -51,18 +55,21 @@ local function plain(value: unknown): Value
   return serialize.Null
 end
 
---- A code: camelCase in the result, snake_case in the document.
-local function code(value: unknown): Value
-  if type(value) ~= 'string' then return plain(value) end
-
-  return Codes.snakeCase(value)
+--- A record field's name as jess's files spell it. `@tes3` names a typed record's fields
+--- camelCase from jess-omwaddon's snake_case ones, which are lowercase words and digits between
+--- underscores, so each capital is where an underscore was. That holds for field names and for
+--- nothing else: a code is never read back this way.
+local function fieldName(name: string): string
+  return (
+    string.gsub(name, '%u', function(letter: string): string return '_' .. string.lower(letter) end)
+  )
 end
 
---- A strip's mode: `dryRun` in the result, `dry-run` in the document.
-local function kebab(value: unknown): Value
+--- The name of the typed string field a subrecord holds.
+local function typedField(value: unknown): Value
   if type(value) ~= 'string' then return plain(value) end
 
-  return (string.gsub(Codes.snakeCase(value), '_', '-'))
+  return fieldName(value)
 end
 
 --- A number serde wrote as an f64: with a point, whole or not.
@@ -111,30 +118,26 @@ end
 
 local strings = listOf(plain)
 
---- A field of a report: its name in the result, its shape, and `keep` for one serde writes as
---- null when it has no value, where every other is left out.
-type Field = { name: string, shape: Shape, keep: boolean? }
+--- A field of a report: its name in jess-save's struct, the name the result has it under, its
+--- shape, and `keep` for one serde writes as null when it has no value, where every other is
+--- left out.
+type Field = { name: string, key: string, shape: Shape, keep: boolean? }
 
 local function field(name: string, shape: Shape?, keep: boolean?): Field
-  return { name = name, shape = shape or plain, keep = keep }
+  return { name = name, key = tes3.text.camelCase(name), shape = shape or plain, keep = keep }
 end
 
---- A struct: its fields in their order, each under its snake_case name.
+--- A struct: its fields in their order, each under its own name.
 local function struct(fields: { Field }): Shape
-  local names: { string } = {}
-  for position, entry in fields do
-    names[position] = Codes.snakeCase(entry.name)
-  end
-
   return function(value: unknown): Value
     local source: { [string]: unknown } = if type(value) == 'table' then value :: {} else {}
     local pairs: { { unknown } } = {}
-    for position, entry in fields do
-      local item = source[entry.name]
+    for _, entry in fields do
+      local item = source[entry.key]
       if item ~= nil then
-        table.insert(pairs, { names[position], entry.shape(item) })
+        table.insert(pairs, { entry.name, entry.shape(item) })
       elseif entry.keep then
-        table.insert(pairs, { names[position], serialize.None })
+        table.insert(pairs, { entry.name, serialize.None })
       end
     end
 
@@ -142,27 +145,25 @@ local function struct(fields: { Field }): Shape
   end
 end
 
---- Counts by name, sorted by name as a BTreeMap is; `codes` when the names are codes.
-local function counts(codes: boolean): Shape
-  return function(value: unknown): Value
-    local names: { string } = {}
-    local byName: { [string]: unknown } = {}
-    if type(value) == 'table' then
-      for key, count in value :: { [unknown]: unknown } do
-        local name = if codes then Codes.snakeCase(tostring(key)) else tostring(key)
-        table.insert(names, name)
-        byName[name] = count
-      end
+--- Counts by name, sorted by name as a BTreeMap is.
+local function counts(value: unknown): Value
+  local names: { string } = {}
+  local byName: { [string]: unknown } = {}
+  if type(value) == 'table' then
+    for key, count in value :: { [unknown]: unknown } do
+      local name = tostring(key)
+      table.insert(names, name)
+      byName[name] = count
     end
-
-    table.sort(names)
-    local pairs: { { unknown } } = {}
-    for _, name in names do
-      table.insert(pairs, { name, plain(byName[name]) })
-    end
-
-    return serialize.struct(pairs)
   end
+
+  table.sort(names)
+  local pairs: { { unknown } } = {}
+  for _, name in names do
+    table.insert(pairs, { name, plain(byName[name]) })
+  end
+
+  return serialize.struct(pairs)
 end
 
 --[[ Reports ]]
@@ -171,202 +172,202 @@ local Written = struct { field 'path', field 'backup' }
 
 --- jess-save's `SaveInfo`.
 local Info = struct {
-  field('format', code),
-  field 'formatVersion',
+  field 'format',
+  field 'format_version',
   field 'description',
-  field('player', struct { field 'name', field 'level', field 'classId', field 'className' }),
+  field('player', struct { field 'name', field 'level', field 'class_id', field 'class_name' }),
   field 'cell',
   field(
-    'inGameTime',
-    struct { field('gameHour', single), field 'day', field 'month', field 'year' }
+    'in_game_time',
+    struct { field('game_hour', single), field 'day', field 'month', field 'year' }
   ),
-  field('timePlayed', float),
+  field('time_played', float),
   field('dependencies', strings),
-  field 'screenshotBytes',
-  field 'currentDay',
-  field('currentHealth', single),
-  field('maximumHealth', single),
+  field 'screenshot_bytes',
+  field 'current_day',
+  field('current_health', single),
+  field('maximum_health', single),
 }
 
 --- jess-save's `SaveCheck`.
 local Check = struct {
   field 'input',
-  field('verdict', code),
-  field 'formatVersion',
-  field 'strippableFormat',
-  field('structureProblems', strings),
-  field 'loadOrderChecked',
-  field('missingContent', listOf(struct { field 'name', field 'strippable' })),
-  field('addedContent', strings),
-  field 'orderChanged',
+  field 'verdict',
+  field 'format_version',
+  field 'strippable_format',
+  field('structure_problems', strings),
+  field 'load_order_checked',
+  field('missing_content', listOf(struct { field 'name', field 'strippable' })),
+  field('added_content', strings),
+  field 'order_changed',
   field(
     'findings',
     listOf(struct {
-      field('severity', code),
-      field('problem', code),
+      field 'severity',
+      field 'problem',
       field 'id',
-      field 'recordIndex',
-      field 'recordType',
-      field 'subrecordIndex',
-      field 'subrecordType',
+      field 'record_index',
+      field 'record_type',
+      field 'subrecord_index',
+      field 'subrecord_type',
     })
   ),
-  field('droppedOnLoad', counts(true)),
+  field('dropped_on_load', counts),
   field('warnings', strings),
 }
 
-local Concerns = listOf(struct { field('kind', code), field 'count', field('action', code) })
+local Concerns = listOf(struct { field 'kind', field 'count', field 'action' })
 
 --- jess-save's `SaveStripPlan`.
 local Step = struct {
   field 'dependency',
-  field('mode', kebab),
-  field 'dependencyIndex',
-  field 'dependenciesBefore',
-  field 'dependenciesAfter',
-  field 'requiresContentFileIndexRemapping',
+  field 'mode',
+  field 'dependency_index',
+  field 'dependencies_before',
+  field 'dependencies_after',
+  field 'requires_content_file_index_remapping',
   field(
-    'saveFormat',
+    'save_format',
     struct {
-      field 'formatVersion',
-      field 'engineMinSupported',
-      field 'engineCurrent',
-      field('mutationStatus', code),
-      field('reason', code),
+      field 'format_version',
+      field 'engine_min_supported',
+      field 'engine_current',
+      field 'mutation_status',
+      field 'reason',
     }
   ),
-  field('targetResolution', struct { field 'status', field 'path' }),
+  field('target_resolution', struct { field 'status', field 'path' }),
   field(
-    'targetRecords',
+    'target_records',
     struct {
       field 'total',
-      field('byType', counts(false)),
+      field('by_type', counts),
       field('samples', listOf(struct { field 'type', field 'id' })),
     }
   ),
   field('dependents', strings),
   field(
-    'saveReferences',
+    'save_references',
     struct {
-      field('confidence', code),
+      field 'confidence',
       field 'total',
-      field('byProvenanceRole', counts(true)),
-      field('byMeaning', counts(true)),
-      field('byRecordType', counts(false)),
+      field('by_provenance_role', counts),
+      field('by_meaning', counts),
+      field('by_record_type', counts),
       field(
         'samples',
         listOf(struct {
-          field 'recordIndex',
-          field 'recordType',
-          field 'subrecordIndex',
-          field 'subrecordType',
-          field 'refId',
-          field('meaning', code),
-          field('provenanceRole', code),
-          field 'firstDefinedBy',
-          field 'lastDefinedBy',
-          field('targetTypes', strings),
+          field 'record_index',
+          field 'record_type',
+          field 'subrecord_index',
+          field 'subrecord_type',
+          field 'ref_id',
+          field 'meaning',
+          field 'provenance_role',
+          field 'first_defined_by',
+          field 'last_defined_by',
+          field('target_types', strings),
         })
       ),
     }
   ),
   field(
-    'contentFileReferences',
+    'content_file_references',
     struct {
-      field('confidence', code),
+      field 'confidence',
       field 'total',
-      field('byMeaning', counts(true)),
-      field('byRecordType', counts(false)),
+      field('by_meaning', counts),
+      field('by_record_type', counts),
       field(
         'samples',
         listOf(struct {
-          field 'recordIndex',
-          field 'recordType',
-          field 'subrecordIndex',
-          field 'subrecordType',
-          field('meaning', code),
-          field 'contentFileIndex',
-          field 'localIndex',
+          field 'record_index',
+          field 'record_type',
+          field 'subrecord_index',
+          field 'subrecord_type',
+          field 'meaning',
+          field 'content_file_index',
+          field 'local_index',
           field 'dependency',
         })
       ),
     }
   ),
   field(
-    'referenceCoverage',
+    'reference_coverage',
     struct {
-      field('status', code),
-      field('knownScans', listOf(code)),
-      field('unclassifiedRiskyRecords', counts(false)),
+      field 'status',
+      field('known_scans', strings),
+      field('unclassified_risky_records', counts),
     }
   ),
   field(
     'blockers',
     struct {
-      field('status', code),
+      field 'status',
       field('hard', Concerns),
       field('informational', Concerns),
       field('protected', Concerns),
     }
   ),
   field(
-    'plannedOperations',
+    'planned_operations',
     listOf(struct {
-      field('name', code),
-      field('status', code),
+      field 'name',
+      field 'status',
       field 'count',
-      field('reason', code),
+      field 'reason',
     })
   ),
   field(
-    'plannedEdits',
+    'planned_edits',
     listOf(struct {
-      field('operation', code),
-      field('status', code),
-      field 'recordIndex',
-      field 'recordType',
-      field 'subrecordIndex',
-      field 'subrecordEndIndex',
-      field 'subrecordType',
-      field('meaning', code),
-      field 'localIndex',
-      field 'oldContentFileIndex',
-      field 'newContentFileIndex',
-      field('reason', code),
+      field 'operation',
+      field 'status',
+      field 'record_index',
+      field 'record_type',
+      field 'subrecord_index',
+      field 'subrecord_end_index',
+      field 'subrecord_type',
+      field 'meaning',
+      field 'local_index',
+      field 'old_content_file_index',
+      field 'new_content_file_index',
+      field 'reason',
     })
   ),
   field(
-    'mutationReadiness',
+    'mutation_readiness',
     struct {
-      field('status', code),
-      field 'canAttemptDryRun',
-      field('reason', code),
-      field('referenceCoverage', code),
+      field 'status',
+      field 'can_attempt_dry_run',
+      field 'reason',
+      field 'reference_coverage',
     }
   ),
   field(
-    'dryRun',
+    'dry_run',
     struct {
       field 'requested',
-      field('status', code),
-      field('reason', code),
-      field('output', code),
-      field 'appliedEdits',
-      field 'bytesBefore',
-      field 'bytesAfter',
-      field('verification', code),
+      field 'status',
+      field 'reason',
+      field 'output',
+      field 'applied_edits',
+      field 'bytes_before',
+      field 'bytes_after',
+      field 'verification',
       field(
-        'postMutationVerification',
+        'post_mutation_verification',
         struct {
-          field('status', code),
-          field('reason', code),
-          field 'knownRemainingTargetRefids',
-          field 'invalidContentFileRefnums',
+          field 'status',
+          field 'reason',
+          field 'known_remaining_target_refids',
+          field 'invalid_content_file_refnums',
         }
       ),
     }
   ),
-  field('mutation', code),
+  field 'mutation',
   field('warnings', strings),
 }
 
@@ -393,7 +394,7 @@ local Subrecords = listOf(struct {
   field 'type',
   field 'size',
   field('range', Range),
-  field('field', code),
+  field('field', typedField),
   field 'value',
 })
 
@@ -429,7 +430,7 @@ local function tree(node: Values.Node): Value
 
   local map = serialize.map()
   for position, key in node.keys do
-    serialize.set(map, if node.verbatim then key else Codes.snakeCase(key), tree(node.values[position]))
+    serialize.set(map, if node.verbatim then key else fieldName(key), tree(node.values[position]))
   end
 
   return map

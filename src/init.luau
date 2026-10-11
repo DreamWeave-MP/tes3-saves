@@ -9,13 +9,13 @@ validated, checked against a load order, and have content files stripped from th
 rule jess-save applies. A load order is a `loadOrder` value: `loadOrder.fromOpenMw(context)` for
 an `@openmw` Context.
 
-Reports spell their codes and field names camelCase; `snakeCase` gives the spelling jess-save's
-JSON, YAML, and TOML have. `tree` is `values` with what plain tables drop: the order fields come
+Reports spell their codes camelCase, made from jess-save's own; `originalCodes` asks a check or a
+strip for them as jess-save's sources have them (`will_not_load`, `dry-run`), which is what its
+JSON, YAML, and TOML hold. `tree` is `values` with what plain tables drop: the order fields come
 in, and which numbers are floats.
 ]]
 
 local Check = require '@self/check'
-local Codes = require '@self/codes'
 local LoadOrder = require '@self/loadorder'
 local Read = require '@self/read'
 local Strip = require '@self/strip'
@@ -76,7 +76,6 @@ return table.freeze {
   parse = Read.parse,
   recordId = recordId,
   screenshot = Read.screenshot,
-  snakeCase = Codes.snakeCase,
   strip = strip,
   tree = Values.tree,
   validate = Check.validate,

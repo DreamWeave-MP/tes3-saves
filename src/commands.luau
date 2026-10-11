@@ -19,7 +19,9 @@ text out for a terminal; a front end with no terminal gets all of it from the re
 
 A save is named by its path, read in `encoding` (win1252 without one), and taken as whichever
 game wrote it unless `game` insists on one. What a command found is in its result: a check's
-verdict and findings, a strip that is blocked and why. A request that can't be carried out at all
+verdict and findings, a strip that is blocked and why. A result's field names are Luau's,
+camelCase; the codes in it (a verdict, a severity, a plan's reasons) are jess-save's own, as its
+sources spell them (`will_not_load`, `dry-run`), which is how they are written and looked up. A request that can't be carried out at all
 raises: a file that isn't there or isn't a save, a configuration that can't be loaded, a content
 file the save doesn't list, a pattern that isn't a regex, an output that is the input.
 
@@ -130,8 +132,8 @@ export type CheckResult = {
   path: string,
   --- The openmw.cfg the load order was read from.
   config: string?,
-  --- The verdict, what is missing, and each finding; `check.loads` says whether OpenMW would load
-  --- the save.
+  --- The verdict, what is missing, and each finding, its codes as jess-save spells them
+  --- (`will_not_load`); `check.loads` says whether OpenMW would load the save.
   check: Check.Check,
 }
 
@@ -143,7 +145,7 @@ local function check(request: CheckRequest): CheckResult
     command = 'check',
     path = request.path,
     config = config,
-    check = Check.check(save, { loadOrder = order }),
+    check = Check.check(save, { loadOrder = order, originalCodes = true }),
   }
 end
 
@@ -178,7 +180,8 @@ export type StripResult = {
   written: Written?,
   --- The plan as `@tes3-saves`'s `strip` reports it: `input`, the `dependencies` in the order
   --- they were removed, and one of `steps` for each, with what refers to the content file, what
-  --- blocks its removal, every edit, and the result of applying them in memory.
+  --- blocks its removal, every edit, and the result of applying them in memory. Its codes are as
+  --- jess-save spells them (`dry-run`, `no_known_blockers`).
   report: { [string]: unknown },
 }
 
@@ -208,6 +211,7 @@ local function strip(request: StripRequest): StripResult
     output = request.output,
     sampleLimit = request.sampleLimit,
     backup = request.backup,
+    originalCodes = true,
   })
 
   return {

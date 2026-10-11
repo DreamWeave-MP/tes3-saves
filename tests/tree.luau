@@ -1,8 +1,7 @@
 --!strict
 --!native
--- What the package gives anything that writes a report or a dump outside Luau: `snakeCase`, the
--- spelling jess-save's JSON, YAML, and TOML have, and `tree`, a record's readable value with the
--- order of its fields, its floats, and its missing values.
+-- `tree`: a record's readable value with what plain tables drop, for anything that writes a dump
+-- outside Luau: the order of its fields, its floats, and its missing values.
 local dumps = require './dumps'
 local fixtures = require './fixtures'
 local plugins = require './plugins'
@@ -13,15 +12,6 @@ local expect = test.expect
 local suite = test.new()
 
 local record, subrecord = plugins.record, plugins.subrecord
-
---- The package's folder, from this file's chunk name.
-local function root(): string
-  local source = debug.info(1, 's')
-  local first = string.sub(source, 1, 1)
-  local path = if first == '@' or first == '=' then string.sub(source, 2) else source
-
-  return string.match(path, '^(.*)/tests/[^/]*$') or '.'
-end
 
 --- A tree as the plain tables `values` gives.
 local function plain(node: saves.Node): unknown
@@ -50,44 +40,6 @@ end
 
 local at, fieldsOf, listOf = dumps.at, dumps.fieldsOf, dumps.listOf
 local readable, luaString, luaNumber = dumps.readable, dumps.luaString, dumps.luaNumber
-
-suite.describe('snakeCase', function()
-  suite.it('spells codes and field names as jess-save writes them', function()
-    expect(saves.snakeCase 'willNotLoad').toBe 'will_not_load'
-    expect(saves.snakeCase 'dependencyIndex').toBe 'dependency_index'
-    expect(saves.snakeCase 'knownRemainingTargetRefids').toBe 'known_remaining_target_refids'
-    expect(saves.snakeCase 'verified').toBe 'verified'
-    expect(saves.snakeCase 'bonus_0').toBe 'bonus_0'
-    expect(saves.snakeCase 'requestedDependencyEntryWouldBeRemovedFrom_SAVE_DEPE').toBe 'requested_dependency_entry_would_be_removed_from_SAVE_DEPE'
-    expect(saves.snakeCase 'laterDependencyIndicesShiftWhenA_SAVE_DEPEEntryIsRemoved').toBe 'later_dependency_indices_shift_when_a_SAVE_DEPE_entry_is_removed'
-    expect(saves.snakeCase 'known_FormIdFieldsPointAtTheDependencyIndexBeingRemoved').toBe 'known_FormId_fields_point_at_the_dependency_index_being_removed'
-    expect(saves.snakeCase 'serialized_LuaRefnumPointsAtRemovedDependency').toBe 'serialized_Lua_refnum_points_at_removed_dependency'
-  end)
-
-  suite.it('undoes camelCase for every code the package\'s sources spell', function()
-    local codes: { [string]: boolean } = {}
-    local count = 0
-    for _, name in { 'check', 'scan', 'strip' } do
-      local source = assert(jess.fs.read(`{root()}/src/{name}.luau`))
-      for code in string.gmatch(source, '\'(%l[%w_]*_[%w_]*)\'') do
-        if codes[code] then continue end
-
-        codes[code] = true
-        count += 1
-      end
-    end
-
-    -- The scans, the edits, the blockers, and the reasons: a few hundred codes between them.
-    expect(count > 150).toBe(true)
-    local undone: { string } = {}
-    for code in codes do
-      local back = saves.snakeCase(tes3.text.camelCase(code))
-      if back ~= code then table.insert(undone, `{code} -> {back}`) end
-    end
-
-    expect(table.concat(undone, '\n')).toBe ''
-  end)
-end)
 
 suite.describe('tree', function()
   suite.it('keeps a save-only record\'s fields, its subrecords, and its Lua keys in order', function()

@@ -174,7 +174,7 @@ suite.describe('check', function()
     expect(result.command).toBe 'check'
     expect(result.config).toBeNil()
     expect(result.check.input).toBe(path)
-    expect(result.check.verdict).toBe 'structureValid'
+    expect(result.check.verdict).toBe 'structure_valid'
     expect(result.check.loads).toBe(true)
     expect(result.check.loadOrderChecked).toBe(false)
   end)
@@ -182,7 +182,7 @@ suite.describe('check', function()
   suite.it('reports a dangling CSTA moved-reference marker', function()
     local path = disk.install('dangling-mvrf', 'commands-check-mvrf').save
     local check = commands.check({ path = path }).check
-    expect(check.verdict).toBe 'invalidStructure'
+    expect(check.verdict).toBe 'invalid_structure'
     expect(check.loads).toBe(false)
     expect(check.structureProblems[1]).toContain '#2 CSTA MVRF #0 is not followed by NAME'
   end)
@@ -230,14 +230,14 @@ suite.describe('check', function()
     -- The configuration is named by its folder as well as by its file.
     local check = commands.check({ path = laid.save, config = laid.root }).check
     expect(check).toEqual(commands.check({ path = laid.save, config = laid.config }).check)
-    expect(check.verdict).toBe 'willNotLoad'
+    expect(check.verdict).toBe 'will_not_load'
     expect(check.loads).toBe(false)
     expect(check.missingContent).toEqual {
       { name = 'Gone.esp', strippable = true },
       { name = 'Unticked.esp', strippable = true },
     }
-    expect(has(check.findings, 'willNotLoad', 'missingBirthsign', 'gone_sign')).toBe(true)
-    expect(has(check.findings, 'broken', 'trappedObjectCannotBeOpened', 'gone_trap')).toBe(true)
+    expect(has(check.findings, 'will_not_load', 'missing_birthsign', 'gone_sign')).toBe(true)
+    expect(has(check.findings, 'broken', 'trapped_object_cannot_be_opened', 'gone_trap')).toBe(true)
     -- Only the removed content's spell is dropped: the player-made one is a record of the save.
     local dropped = 0
     for _, count in check.droppedOnLoad do
@@ -252,8 +252,8 @@ suite.describe('check', function()
     -- Races.esp is no longer active: the save can't load with this load order.
     local check = commands.check({ path = laid.save, config = laid.config }).check
     expect(check.loads).toBe(false)
-    expect(has(check.findings, 'willNotLoad', 'missingPlayerRace', 'custom_race')).toBe(true)
-    expect(has(check.findings, 'broken', 'playerHeadMissing', 'custom_head')).toBe(true)
+    expect(has(check.findings, 'will_not_load', 'missing_player_race', 'custom_race')).toBe(true)
+    expect(has(check.findings, 'broken', 'player_head_missing', 'custom_head')).toBe(true)
   end)
 
   suite.it('reads content in the configuration\'s code page, else the one it is told', function()
@@ -269,7 +269,7 @@ suite.describe('check', function()
       return findings(check)
     end
 
-    local missingSign = { 'willNotLoad missingBirthsign Аист' }
+    local missingSign = { 'will_not_load missing_birthsign Аист' }
     expect(found('encoding=win1251\n', nil)).toEqual {}
     expect(found('', 'win1251')).toEqual {}
     -- The configuration's code page is the one the engine reads content in.
@@ -505,9 +505,9 @@ suite.describe('strip', function()
     expect(result.written).toBeNil()
     expect(result.report.input).toBe(laid.save)
     expect(result.report.dependencies).toEqual { 'Tribunal.esm' }
-    expect(part(result, 'mode')).toBe 'dryRun'
+    expect(part(result, 'mode')).toBe 'dry-run'
     expect(part(result, 'dryRun').status).toBe 'verified'
-    expect(part(result, 'mutation')).toBe 'dryRunOnly'
+    expect(part(result, 'mutation')).toBe 'dry_run_only'
     expect(#part(result, 'plannedEdits')).toBe(4)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
 
@@ -522,7 +522,7 @@ suite.describe('strip', function()
     }
 
     expect(preview.written).toBeNil()
-    expect(part(preview, 'mode')).toBe 'dryRun'
+    expect(part(preview, 'mode')).toBe 'dry-run'
     expect(jess.fs.exists(output)).toBe(false)
   end)
 
@@ -549,7 +549,7 @@ suite.describe('strip', function()
     request.backup = nil
     local inPlace = commands.strip(request)
     expect(inPlace.written).toEqual { path = laid.save, backup = laid.save .. '.bak' }
-    expect(part(inPlace, 'mode')).toBe 'inPlace'
+    expect(part(inPlace, 'mode')).toBe 'in-place'
     expect(disk.read(laid.save .. '.bak') == laid.bytes).toBe(true)
     expect(disk.read(laid.save) == disk.read(output)).toBe(true)
   end)
@@ -570,7 +570,7 @@ suite.describe('strip', function()
       expect(part(result, 'mutationReadiness').canAttemptDryRun).toBe(false)
       local blocked = false
       for _, concern in part(result, 'blockers').hard do
-        if concern.kind == 'targetIntroducedRefIds' and concern.count == 2 then blocked = true end
+        if concern.kind == 'target_introduced_ref_ids' and concern.count == 2 then blocked = true end
       end
 
       expect(blocked).toBe(true)
@@ -586,7 +586,7 @@ suite.describe('strip', function()
     expect(result.config).toBeNil()
     expect(result.blocked).toBe(true)
     expect(part(result, 'targetResolution')).toEqual { status = 'disabled' }
-    expect(part(result, 'blockers').hard[1].kind).toBe 'targetRefIdsWithIncompletePriorProvenance'
+    expect(part(result, 'blockers').hard[1].kind).toBe 'target_ref_ids_with_incomplete_prior_provenance'
   end)
 
   suite.it('refuses what it can\'t be asked: another game\'s save, an unknown file, its own input', function()

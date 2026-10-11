@@ -1,0 +1,299 @@
+--!strict
+--!native
+-- The codes a check's and a strip's reports hold are jess-save's, spelled as its sources spell
+-- them (`./codelist`). A report has them camelCase for Luau, or with `originalCodes` as they
+-- are; either way each is spelled once, from jess-save's own, so nothing that writes a report
+-- has to work one spelling back from the other.
+local codelist = require './codelist'
+local fixtures = require './fixtures'
+local saves = require '@tes3-saves'
+local tes3 = require '@tes3'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local camelCase = tes3.text.camelCase
+
+local Listed: { [string]: boolean } = {}
+for _, code in codelist.Codes do
+  Listed[code] = true
+end
+
+--- The package's folder, from this file's chunk name.
+local function root(): string
+  local source = debug.info(1, 's')
+  local first = string.sub(source, 1, 1)
+  local path = if first == '@' or first == '=' then string.sub(source, 2) else source
+
+  return string.match(path, '^(.*)/tests/[^/]*$') or '.'
+end
+
+--- A load order of a scenario's files, held in memory.
+local function order(scenario: fixtures.Scenario): saves.LoadOrder
+  local byName: { [string]: string } = {}
+  for name in scenario.files do
+    byName[string.lower(name)] = name
+  end
+
+  local content = {}
+  for line in string.gmatch(scenario.config or '', 'content=([^\n]+)') do
+    table.insert(content, { name = line, path = byName[string.lower(line)] })
+  end
+
+  return {
+    content = content,
+    resolve = function(name: string): string? return byName[string.lower(name)] end,
+    read = function(path: string): (string | buffer)? return scenario.files[path] end,
+    encoding = string.match(scenario.config or '', 'encoding=(%w+)'),
+  }
+end
+
+--- Whether a code is one jess-save spells: listed, or one lowercase word, which every spelling
+--- leaves alone.
+local function known(code: string): boolean return Listed[code] or string.find(code, '^%l+$') ~= nil end
+
+--- Walks a report asked for with jess-save's codes beside the same report in camelCase, and
+--- gives every string the two spell differently, as jess-save's. Wherever they differ the
+--- camelCase one must be the other camelCased: a value, or a name counts are kept under.
+local function differences(original: any, camel: any, out: { string }, where: string)
+  if type(original) == 'string' then
+    if original == camel then return end
+
+    table.insert(out, original)
+    if camel ~= camelCase(original) then
+      error(`{where}: '{camel}' isn't '{original}' camelCased`, 0)
+    end
+
+    return
+  end
+
+  if type(original) ~= 'table' then
+    if original ~= camel then error(`{where}: {original} and {camel} differ`, 0) end
+
+    return
+  end
+
+  if type(camel) ~= 'table' then error(`{where}: only one report has a table here`, 0) end
+
+  local seen = 0
+  for key, value in original do
+    seen += 1
+    local other = camel[key]
+    if other == nil and type(key) == 'string' then
+      table.insert(out, key)
+      other = camel[camelCase(key)]
+    end
+
+    if other == nil then error(`{where}.{key}: missing from the camelCase report`, 0) end
+
+    differences(value, other, out, `{where}.{key}`)
+  end
+
+  local count = 0
+  for _ in camel do
+    count += 1
+  end
+
+  if count ~= seen then error(`{where}: the reports hold {seen} and {count} fields`, 0) end
+end
+
+--- Every string a strip step holds where jess-save's reports hold a code.
+local function stepCodes(step: any): { string }
+  local out = { step.mode, step.mutation }
+  local function take(...: string?)
+    for _, code in { ... } do
+      table.insert(out, code)
+    end
+  end
+
+  local function keys(counts: { [string]: number }?)
+    for key in counts or {} do
+      table.insert(out, key)
+    end
+  end
+
+  take(step.saveFormat.mutationStatus, step.saveFormat.reason)
+  local references = step.saveReferences
+  if references then
+    take(references.confidence)
+    keys(references.byProvenanceRole)
+    keys(references.byMeaning)
+    for _, sample in references.samples do
+      take(sample.meaning, sample.provenanceRole)
+    end
+  end
+
+  local files = step.contentFileReferences
+  if files then
+    take(files.confidence)
+    keys(files.byMeaning)
+    for _, sample in files.samples do
+      take(sample.meaning)
+    end
+  end
+
+  take(step.referenceCoverage.status)
+  take(table.unpack(step.referenceCoverage.knownScans))
+  take(step.blockers.status)
+  for _, list in { step.blockers.hard, step.blockers.informational, step.blockers.protected } do
+    for _, concern in list do
+      take(concern.kind, concern.action)
+    end
+  end
+
+  for _, operation in step.plannedOperations do
+    take(operation.name, operation.status, operation.reason)
+  end
+
+  for _, edit in step.plannedEdits do
+    take(edit.operation, edit.status, edit.reason)
+    if edit.meaning then take(edit.meaning) end
+  end
+
+  local readiness = step.mutationReadiness
+  take(readiness.status, readiness.reason, readiness.referenceCoverage)
+  local dryRun = step.dryRun
+  take(dryRun.status, dryRun.reason, dryRun.output)
+  if dryRun.verification then take(dryRun.verification) end
+
+  local post = dryRun.postMutationVerification
+  if post then take(post.status, post.reason) end
+
+  return out
+end
+
+suite.it('spells every code and reason of jess-save\'s sources, letter for letter', function()
+  local sources = {}
+  for _, name in jess.fs.list(`{root()}/src`) do
+    table.insert(sources, assert(jess.fs.read(`{root()}/src/{name}`)))
+  end
+
+  local text = table.concat(sources, '\n')
+  local unreported: { [string]: boolean } = {}
+  for _, code in codelist.Unreported do
+    unreported[code] = true
+    expect(Listed[code]).toBe(true)
+  end
+
+  expect(#codelist.Codes).toBe(229)
+  local missing = {}
+  for _, code in codelist.Codes do
+    if not unreported[code] and not string.find(text, `'{code}'`, 1, true) then
+      table.insert(missing, code)
+    end
+  end
+
+  expect(missing).toEqual {}
+end)
+
+suite.it('reports a strip\'s codes as jess-save spells them, and camelCase from those', function()
+  local reported: { [string]: boolean } = {}
+  local steps = 0
+  for _, scenario in fixtures.scenarios() do
+    if scenario.name == 'morrowind' then continue end
+
+    local dependencies = saves.info(saves.parse(scenario.save)).dependencies
+    for _, mode in { 'dryRun', 'inMemory' } do
+      for _, dependency in dependencies do
+        local function strip(originalCodes: boolean): any
+          local options: saves.StripOptions =
+            { loadOrder = order(scenario), mode = mode :: saves.Mode, sampleLimit = 20 }
+          options.originalCodes = originalCodes
+          return saves.strip(saves.parse(scenario.save), { dependency }, options)
+        end
+
+        -- A strip raises for a content file it can't read; both spellings raise alike.
+        local done, original = pcall(strip, true)
+        if not done then continue end
+
+        differences(original, strip(false), {}, `{scenario.name} {dependency}`)
+        for _, step in original.steps do
+          steps += 1
+          for _, code in stepCodes(step) do
+            reported[code] = true
+            if not known(code) then error(`{scenario.name} {dependency}: '{code}' isn't jess-save's`, 0) end
+          end
+        end
+      end
+    end
+  end
+
+  -- The scenarios between them plan, block, and apply; what they report is most of the list.
+  expect(steps > 150).toBe(true)
+  local count = 0
+  for code in reported do
+    if Listed[code] then count += 1 end
+  end
+
+  expect(count > 100).toBe(true)
+  for _, code in {
+    'dry-run',
+    'in-memory',
+    'dry_run_only',
+    'not_requested',
+    'in_memory_mutation_reparsed_successfully',
+    'no_known_removed_dependency_references_remain',
+    'known_openmw_formid_and_lua_refnum_fields',
+    'requested_dependency_entry_would_be_removed_from_SAVE_DEPE',
+    'requested_dependency_entry_would_be_removed_from_TES3_MAST',
+    'OpenMW maps save FormIds through TES3_MAST_not_SAVE_DEPE',
+    'CSTA_reference_group_points_at_the_dependency_being_removed',
+    'CSTA_reference_group_base_object_is_introduced_by_removed_dependency',
+  } do
+    if not reported[code] then error(`no scenario reported '{code}'`, 0) end
+  end
+end)
+
+suite.it('reports a check\'s codes as jess-save spells them, and camelCase from those', function()
+  local verdicts: { [string]: boolean } = {}
+  local reported: { string } = {}
+  for _, scenario in fixtures.scenarios() do
+    if scenario.name == 'morrowind' then continue end
+
+    for _, against in { true, false } do
+      local loadOrder = if against then order(scenario) else nil
+      local save = saves.parse(scenario.save)
+      local original = saves.check(save, { loadOrder = loadOrder, originalCodes = true })
+      local camel = saves.check(save, { loadOrder = loadOrder })
+      differences(original, camel, reported, scenario.name)
+      verdicts[original.verdict] = true
+      expect(camel.loads).toBe(original.loads)
+      for _, finding in original.findings do
+        expect(known(finding.severity)).toBe(true)
+        expect(known(finding.problem)).toBe(true)
+      end
+
+      for kind in original.droppedOnLoad do
+        expect(known(kind)).toBe(true)
+      end
+    end
+  end
+
+  for _, code in reported do
+    if not known(code) then error(`'{code}' isn't jess-save's`, 0) end
+  end
+
+  for _, verdict in {
+    'invalid_structure',
+    'will_not_load',
+    'broken_state',
+    'loads_with_warnings',
+    'loads_cleanly',
+    'structure_valid',
+  } do
+    if not verdicts[verdict] then error(`no scenario's verdict was '{verdict}'`, 0) end
+  end
+end)
+
+suite.it('names what validate checks as jess-save does when asked', function()
+  local plugin = saves.parse(fixtures.save()).plugin
+  expect(saves.validate(plugin).checks).toEqual { 'structure', 'saveMetadata', 'saveFormat', 'cellState' }
+  expect(saves.validate(plugin, true).checks).toEqual {
+    'structure',
+    'save_metadata',
+    'save_format',
+    'cell_state',
+  }
+end)
+
+return suite

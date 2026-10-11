@@ -92,7 +92,7 @@ local CaiusMet: commands.InfoResult = {
 local function checked(fields: { [string]: unknown }): commands.CheckResult
   local check: saves.Check = {
     input = 'Caius_Met.omwsave',
-    verdict = 'structureValid',
+    verdict = 'structure_valid',
     loads = true,
     formatVersion = 40,
     strippableFormat = true,
@@ -592,7 +592,7 @@ suite.describe('render', function()
 
   suite.it('writes a check against a load order: codes in snake_case, counts by name', function()
     local result = checked {
-      verdict = 'brokenState',
+      verdict = 'broken_state',
       formatVersion = 37,
       loadOrderChecked = true,
       missingContent = {
@@ -602,7 +602,7 @@ suite.describe('render', function()
       findings = {
         {
           severity = 'broken',
-          problem = 'npcFollowsOrEscortsMissingTarget',
+          problem = 'npc_follows_or_escorts_missing_target',
           id = 'BM_werewolf_skaal1A3',
           recordIndex = 234,
           recordType = 'CSTA',
@@ -611,12 +611,12 @@ suite.describe('render', function()
         },
       },
       droppedOnLoad = {
-        spellStateSpell = 16,
-        cellRefBaseObject = 90,
-        globalScript = 8,
-        savedCellState = 6,
-        globalVariable = 70,
-        inventoryItemBaseObject = 170,
+        spell_state_spell = 16,
+        cell_ref_base_object = 90,
+        global_script = 8,
+        saved_cell_state = 6,
+        global_variable = 70,
+        inventory_item_base_object = 170,
       },
     }
 
@@ -673,7 +673,7 @@ suite.describe('render', function()
   suite.it('writes a strip\'s plan: its mode in kebab-case, its codes as jess-save spelled them', function()
     local result = stripped({
       dependency = 'Tribunal.esm',
-      mode = 'dryRun',
+      mode = 'dry-run',
       dependencyIndex = 1,
       dependenciesBefore = 2,
       dependenciesAfter = 1,
@@ -683,22 +683,22 @@ suite.describe('render', function()
         engineMinSupported = 5,
         engineCurrent = 40,
         mutationStatus = 'supported',
-        reason = 'currentOpenmwSaveFormat',
+        reason = 'current_openmw_save_format',
       },
       targetResolution = { status = 'disabled' },
       dependents = {},
       referenceCoverage = {
-        status = 'knownFields',
-        knownScans = { 'openmwRefidNameFields', 'openmwLuaSerializedData' },
+        status = 'known_fields',
+        knownScans = { 'openmw_refid_name_fields', 'openmw_lua_serialized_data' },
         unclassifiedRiskyRecords = { LUAM = 2 },
       },
       blockers = {
         status = 'blocked',
         hard = {
           {
-            kind = 'targetRefIdsWithIncompletePriorProvenance',
+            kind = 'target_ref_ids_with_incomplete_prior_provenance',
             count = 3,
-            action = 'resolveAndParseEveryPriorDependency',
+            action = 'resolve_and_parse_every_prior_dependency',
           },
         },
         informational = {},
@@ -706,35 +706,35 @@ suite.describe('render', function()
       },
       plannedOperations = {
         {
-          name = 'removeDependencyFromSaveDepe',
+          name = 'remove_dependency_from_save_depe',
           status = 'planned',
           count = 1,
-          reason = 'requestedDependencyEntryWouldBeRemovedFrom_SAVE_DEPE',
+          reason = 'requested_dependency_entry_would_be_removed_from_SAVE_DEPE',
         },
       },
       plannedEdits = {
         {
-          operation = 'remapContentFileIndex',
+          operation = 'remap_content_file_index',
           status = 'planned',
           recordIndex = 4,
           recordType = 'LUAM',
           subrecordIndex = 0,
           subrecordType = 'LUAD',
-          meaning = 'luaObjectRefnum',
+          meaning = 'lua_object_refnum',
           localIndex = 42,
           oldContentFileIndex = 2,
           newContentFileIndex = 1,
-          reason = 'contentFileIndexShiftsAfter_SAVE_DEPERemoval',
+          reason = 'content_file_index_shifts_after_SAVE_DEPE_removal',
         },
       },
       mutationReadiness = {
         status = 'blocked',
         canAttemptDryRun = false,
-        reason = 'hardBlockersPresent',
-        referenceCoverage = 'knownFields',
+        reason = 'hard_blockers_present',
+        referenceCoverage = 'known_fields',
       },
-      dryRun = { requested = true, status = 'blocked', reason = 'hardBlockersPresent', output = 'none' },
-      mutation = 'dryRunOnly',
+      dryRun = { requested = true, status = 'blocked', reason = 'hard_blockers_present', output = 'none' },
+      mutation = 'dry_run_only',
       warnings = { 'a warning, as it was written' },
     }, { dryRun = true, blocked = true })
 
@@ -809,7 +809,7 @@ suite.describe('render', function()
   end)
 
   suite.it('says where a strip wrote, and leaves a null out of TOML', function()
-    local step = { dependency = 'Tribunal.esm', mode = 'inPlace', mutation = 'written', warnings = {} }
+    local step = { dependency = 'Tribunal.esm', mode = 'in-place', mutation = 'written', warnings = {} }
     local written = stripped(step, { written = { path = 'Save.omwsave', backup = 'Save.omwsave.bak' } })
     expect(cli.render(written, { format = 'json' })).toBe(
       '{"input":"Save.omwsave","dependencies":["Tribunal.esm"],'
@@ -1086,10 +1086,10 @@ end)
 suite.describe('status', function()
   suite.it('is 1 for a check of a save that can\'t load, and 0 for one that can', function()
     expect(cli.status(checked {})).toBe(0)
-    expect(cli.status(checked { verdict = 'brokenState' })).toBe(0)
-    expect(cli.status(checked { verdict = 'loadsWithWarnings' })).toBe(0)
-    expect(cli.status(checked { verdict = 'willNotLoad', loads = false })).toBe(1)
-    expect(cli.status(checked { verdict = 'invalidStructure', loads = false })).toBe(1)
+    expect(cli.status(checked { verdict = 'broken_state' })).toBe(0)
+    expect(cli.status(checked { verdict = 'loads_with_warnings' })).toBe(0)
+    expect(cli.status(checked { verdict = 'will_not_load', loads = false })).toBe(1)
+    expect(cli.status(checked { verdict = 'invalid_structure', loads = false })).toBe(1)
   end)
 
   suite.it('is 1 for a strip that was blocked, unless it was a dry run', function()
