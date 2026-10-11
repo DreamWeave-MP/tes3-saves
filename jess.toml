@@ -10,6 +10,10 @@ tests = ["tests/run.luau"]
 [dependencies]
 "org.dreamweave.tes3" = "0.1"
 
+# The suite hands `loadOrder.fromOpenMw` a real Context; the package itself only names its shape.
+[dev-dependencies]
+"org.dreamweave.openmw" = "0.1"
+
 [modules]
 "@tes3-saves" = "src/init.luau"
 

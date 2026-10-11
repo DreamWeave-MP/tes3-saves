@@ -2,9 +2,12 @@
 --!native
 -- tes3-saves' own cases: what jess's CLI save tests (`libs/cli/tests/save.rs`, `save_strip.rs`)
 -- and jess-save's unit tests check, on saves built here and load orders held in memory, so the
--- suite needs nothing but the package.
+-- suite needs nothing but the package. The last group is the exception: it lays scenarios out
+-- under the harness's `scratchRoot` and reads them back through a real `@openmw` Context.
 local fixtures = require './fixtures'
 local plugins = require './plugins'
+local fs = require '@dream/fs'
+local openmw = require '@openmw'
 local saves = require '@tes3-saves'
 local tes3 = require '@tes3'
 local test = require '@jess/test'
@@ -55,6 +58,30 @@ local function open(name: string): (saves.Save, saves.LoadOrder)
   end
 
   return saves.parse(found.save), memory(found.files, active)
+end
+
+local function io<Value>(value: Value?, message: string?, kind: dream_fs_ErrorKind?): Value
+  if not value then error(message or tostring(kind), 0) end
+
+  return value
+end
+
+--- A scenario as OpenMW would find it: its files in a data folder, its config beside it, and the
+--- Context of that config. Returns the Context, the data folder, and the scenario.
+local function installed(name: string): (openmw.Context, string, fixtures.Scenario)
+  local scratch =
+    assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
+  local found = scenario(name)
+  local directory = jess.fs.join(scratch, 'tes3-saves', name)
+  local data = jess.fs.join(directory, 'data')
+  io(fs.mkdir(data, { recursive = true }))
+  for file, bytes in found.files do
+    io(fs.writeFile(jess.fs.join(data, file), bytes))
+  end
+
+  local path = jess.fs.join(directory, 'openmw.cfg')
+  io(fs.writeFile(path, 'data=data\n' .. (found.config or '')))
+  return openmw.new(path), data, found
 end
 
 local function step(report: { [string]: unknown }, index: number?): { [string]: any }
@@ -343,6 +370,46 @@ suite.describe('strip', function()
       )
       expect(step(report).saveFormat.mutationStatus).toBe(status)
     end
+  end)
+end)
+
+suite.describe('load order from an OpenMW Context', function()
+  suite.it('takes the content, the files, and the code page from the Context', function()
+    local context, data, found = installed 'check-what-breaks'
+    local order = saves.loadOrder.fromOpenMw(context)
+    local morrowind = jess.fs.join(data, 'Morrowind.esm')
+    expect(order.content).toEqual { { name = 'Morrowind.esm', path = morrowind } }
+    expect(order.resolve 'unticked.esp').toBe(jess.fs.join(data, 'Unticked.esp'))
+    expect(order.resolve 'Gone.esp').toBeNil()
+    expect(order.encoding).toBeNil()
+    local read = assert(order.read)
+    expect(buffer.tostring(read(morrowind) :: buffer) == found.files['Morrowind.esm']).toBe(true)
+    -- A path the Context never named is read as the file it is.
+    local config = jess.fs.join(jess.fs.parent(data), 'openmw.cfg')
+    expect(buffer.tostring(read(config) :: buffer)).toBe 'data=data\ncontent=Morrowind.esm\n'
+    expect(saves.loadOrder.fromOpenMw((installed 'encoding-win1251')).encoding).toBe 'win1251'
+  end)
+
+  suite.it('checks and strips as it does against the same files in memory', function()
+    local save, order = open 'check-what-breaks'
+    local checked =
+      saves.check(save, { loadOrder = saves.loadOrder.fromOpenMw((installed 'check-what-breaks')) })
+    expect(checked.verdict).toBe 'willNotLoad'
+    expect(checked).toEqual(saves.check(save, { loadOrder = order }))
+
+    local expected, memoryOrder = open 'typed-refids'
+    saves.strip(expected, { 'Tribunal.esm' }, { loadOrder = memoryOrder, mode = 'inMemory' })
+    local stripped = saves.parse(scenario('typed-refids').save)
+    local report = saves.strip(
+      stripped,
+      { 'Tribunal.esm' },
+      { loadOrder = saves.loadOrder.fromOpenMw((installed 'typed-refids')), mode = 'inMemory' }
+    )
+    expect(step(report).dryRun.status).toBe 'verified'
+    expect(saves.info(stripped).dependencies).toEqual { 'Morrowind.esm' }
+    expect(buffer.tostring(stripped.plugin:save()) == buffer.tostring(expected.plugin:save())).toBe(
+      true
+    )
   end)
 end)
 
