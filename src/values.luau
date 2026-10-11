@@ -203,6 +203,24 @@ local function luaNumber(value: number): Node
   return float(value)
 end
 
+--- A Lua integer as a whole number where a number holds it exactly, and past that as its digits:
+--- a plain number in a tree is a whole number, and nothing else in one can hold 64 bits.
+local function luaInteger(value: integer): Node
+  local number = integer.tonumber(value)
+  if math.abs(number) <= 2 ^ 53 then return number end
+
+  return tostring(value)
+end
+
+--- The place in a list a table key names: a number or an integer that is a whole number.
+local function listIndex(key: LuaValue): number?
+  if key.kind == 'number' then return key.value :: number end
+
+  if key.kind == 'integer' then return integer.tonumber(key.value :: integer) end
+
+  return nil
+end
+
 local function refnum(ref: tes3.LuaRef): Fields
   return fields({ { 'index', ref.index }, { 'content_file', ref.contentFile } }, true)
 end
@@ -225,6 +243,8 @@ local function luaNode(value: LuaValue): Node
 
   if kind == 'number' then return luaNumber(value.value :: number) end
 
+  if kind == 'integer' then return luaInteger(value.value :: integer) end
+
   if kind == 'boolean' then return value.value :: boolean end
 
   if kind == 'string' then return tes3.lossyUtf8(value.value :: string) end
@@ -233,7 +253,7 @@ local function luaNode(value: LuaValue): Node
     local entries = value.entries or {}
     local isList = #entries > 0
     for position, entry in entries do
-      if entry.key.kind ~= 'number' or entry.key.value ~= position then
+      if listIndex(entry.key) ~= position then
         isList = false
         break
       end
@@ -255,6 +275,7 @@ local function luaNode(value: LuaValue): Node
       local text = if key.kind == 'string'
         then tes3.lossyUtf8(key.value :: string)
         elseif key.kind == 'number' then numberKey(key.value :: number)
+        elseif key.kind == 'integer' then tostring(key.value)
         elseif key.kind == 'boolean' then tostring(key.value)
         else key.kind
       -- Two keys that spell alike share the first one's place; the later value is the one kept.

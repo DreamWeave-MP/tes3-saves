@@ -1178,7 +1178,7 @@ suite.describe('references by content file', function()
   end)
 
   suite.it('says which records it can\'t classify: Lua data that doesn\'t decode', function()
-    local undecodable = record('LUAM', subrecord('LUAD', '\1'))
+    local undecodable = record('LUAM', subrecord('LUAD', '\2'))
     local laid = disk.lay('strip-risky', fixtures.save() .. undecodable .. undecodable, Base)
     local report = stripOk(laid, { '--dry-run' }, { 'Morrowind.esm' })
     expectMatches(report.steps[1], {

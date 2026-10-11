@@ -155,7 +155,7 @@ suite.describe('tree', function()
 
     local bytes = fixtures.save()
       .. record('LUAM', subrecord('LUAD', tes3.save.encodeLuaData(state)))
-      .. record('LUAM', subrecord('LUAD', '\1'))
+      .. record('LUAM', subrecord('LUAD', '\2'))
     local save = saves.parse(bytes)
     local trees = saves.tree(save)
     local data = fieldsOf(at(listOf(at(trees[3], 'subrecords')).items[1], 'LUAD'))
@@ -168,7 +168,48 @@ suite.describe('tree', function()
       { kind = 'float', value = 1 },
       { kind = 'float', value = 2.5 },
     }
-    expect(at(listOf(at(trees[4], 'subrecords')).items[1], 'LUAD')).toContain '1 bytes, undecodable: unsupported Lua serialization format version 1'
+    expect(at(listOf(at(trees[4], 'subrecords')).items[1], 'LUAD')).toContain '1 bytes, undecodable: unsupported Lua serialization format version 2'
+  end)
+
+  suite.it('shows the integers of a version 1 payload as whole numbers, under whole-number keys', function()
+    local state: tes3.LuaValue = {
+      kind = 'table',
+      entries = {
+        { key = luaString 'count', value = { kind = 'integer', value = 7i } },
+        { key = { kind = 'integer', value = 2i }, value = luaNumber(0.5) },
+        {
+          key = luaString 'big',
+          value = { kind = 'integer', value = integer.fromstring '9223372036854775807' :: integer },
+        },
+      },
+    }
+
+    -- An integer is what makes a payload version 1.
+    local payload = tes3.save.encodeLuaData(state)
+    expect(string.byte(payload, 1)).toBe(1)
+
+    local save = saves.parse(fixtures.save() .. record('LUAM', subrecord('LUAD', payload)))
+    local data = fieldsOf(at(listOf(at(saves.tree(save)[3], 'subrecords')).items[1], 'LUAD'))
+    expect(data.keys).toEqual { 'count', '2', 'big' }
+    expect(data.values[1]).toBe(7)
+    expect(data.values[2]).toEqual { kind = 'float', value = 0.5 }
+
+    -- Past what a number holds exactly, the digits.
+    expect(data.values[3]).toBe '9223372036854775807'
+
+    -- A list written with integer keys is still a list.
+    local listed: tes3.LuaValue = {
+      kind = 'table',
+      entries = {
+        { key = { kind = 'integer', value = 1i }, value = luaString 'a' },
+        { key = { kind = 'integer', value = 2i }, value = luaString 'b' },
+      },
+    }
+    local second = saves.parse(
+      fixtures.save() .. record('LUAM', subrecord('LUAD', tes3.save.encodeLuaData(listed)))
+    )
+    local items = listOf(at(listOf(at(saves.tree(second)[3], 'subrecords')).items[1], 'LUAD')).items
+    expect(items).toEqual { 'a', 'b' }
   end)
 
   suite.it('is what values gives, as plain tables, and shows Lua data as @tes3 does', function()

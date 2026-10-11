@@ -312,8 +312,8 @@ local function scenarios(): { Scenario }
   add(
     'risky-lua',
     save()
-      .. record('LUAM', subrecord('LUAD', '\1'))
-      .. record('LUAM', subrecord('LUAD', '\1'))
+      .. record('LUAM', subrecord('LUAD', '\2'))
+      .. record('LUAM', subrecord('LUAD', '\2'))
       .. record('LUAM', subrecord('LUAD', luaCustom('x', '\1\2\3'))),
     base
   )

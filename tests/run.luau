@@ -163,7 +163,7 @@ suite.describe('reading', function()
         'LUAM',
         subrecord('FRMR', formId(41, 1)) .. subrecord('LUAD', fixtures.luaObject(42, 1))
       )
-      .. record('LUAM', subrecord('LUAD', '\1'))
+      .. record('LUAM', subrecord('LUAD', '\2'))
     local save = saves.parse(bytes)
     local values = saves.values(save) :: { any }
     expect(values[2].type).toBe 'SaveHeader'
@@ -172,7 +172,7 @@ suite.describe('reading', function()
     local rows = saves.luaData(save)
     expect(#rows).toBe(2)
     expect((rows[1].value :: tes3.LuaValue).kind).toBe 'object'
-    expect(rows[2].error).toContain 'unsupported Lua serialization format version 1'
+    expect(rows[2].error).toContain 'unsupported Lua serialization format version 2'
     expect(saves.recordId(save, 1)).toBeNil()
   end)
 end)
