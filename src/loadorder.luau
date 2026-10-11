@@ -10,7 +10,6 @@ some other way build one themselves.
 ]]
 
 local intern = require '@dream/intern'
-local openmw = require '@openmw'
 local tes3 = require '@tes3'
 
 export type Content = { name: string, path: string? }
@@ -26,8 +25,18 @@ export type LoadOrder = {
   encoding: string?,
 }
 
+--- What `fromOpenMw` uses of an `@openmw` Context, named here so reading saves doesn't depend on
+--- the VFS and archives behind one. `Self` is the whole Context: its methods take it as their
+--- receiver, and the checker rejects a Context where they are declared to take anything narrower.
+type Context<Self> = {
+  read encoding: string?,
+  read content: (self: Self) -> { Content },
+  read resolve: (self: Self, path: string) -> string?,
+  read readFile: (self: Self, path: string) -> buffer?,
+}
+
 --- The load order an `@openmw` Context describes.
-local function fromOpenMw(context: openmw.Context): LoadOrder
+local function fromOpenMw<Self>(context: Self & Context<Self>): LoadOrder
   local content = context:content()
   local names: { [string]: string } = {}
   for _, entry in content do
