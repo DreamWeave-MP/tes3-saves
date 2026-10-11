@@ -1,0 +1,90 @@
+--!strict
+--!native
+-- Saves and load orders on disk for the suites that go through files: a fresh folder under the
+-- harness's `scratchRoot` for each case, and a scenario laid out in one as OpenMW would find it,
+-- the way jess's CLI tests (`libs/cli/tests/save.rs`, `save_strip.rs`) wrote theirs.
+local fixtures = require './fixtures'
+local fs = require '@dream/fs'
+
+local function must<Value>(value: Value?, message: string?): Value
+  if value == nil then error(message or 'the filesystem refused', 0) end
+
+  return value
+end
+
+--- An empty folder of the suite's own, by name: what an earlier run left there is removed.
+local function folder(name: string): string
+  local scratch =
+    assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
+  local path = jess.fs.join(scratch, 'tes3-saves', name)
+  if jess.fs.exists(path) then must(fs.remove(path, { recursive = true })) end
+
+  must(fs.mkdir(path, { recursive = true }))
+  return path
+end
+
+--- Writes `bytes` to `path`, and gives the path back.
+local function write(path: string, bytes: string): string
+  must(fs.writeFile(path, bytes))
+  return path
+end
+
+local function read(path: string): string return buffer.tostring(must(fs.readFile(path))) end
+
+local function scenario(name: string): fixtures.Scenario
+  for _, found in fixtures.scenarios() do
+    if found.name == name then return found end
+  end
+
+  return error(`no scenario {name}`)
+end
+
+export type Installed = {
+  root: string,
+  --- The save.
+  save: string,
+  --- The openmw.cfg, whose data folder holds the scenario's content files.
+  config: string,
+  data: string,
+  --- The save's bytes as they were written.
+  bytes: string,
+}
+
+--- A save in a fresh folder named `name`, beside an openmw.cfg whose data folder holds `files`;
+--- `lines` are the configuration's after `data=`.
+local function lay(
+  name: string,
+  bytes: string,
+  files: { [string]: string },
+  lines: string?
+): Installed
+  local root = folder(name)
+  local data = jess.fs.join(root, 'data')
+  must(fs.mkdir(data))
+  for file, content in files do
+    write(jess.fs.join(data, file), content)
+  end
+
+  return {
+    root = root,
+    save = write(jess.fs.join(root, 'Save.omwsave'), bytes),
+    config = write(jess.fs.join(root, 'openmw.cfg'), 'data=data\n' .. (lines or '')),
+    data = data,
+    bytes = bytes,
+  }
+end
+
+--- The scenario `name` laid out in a fresh folder named `case` (the scenario's name without one).
+local function install(name: string, case: string?): Installed
+  local found = scenario(name)
+  return lay(case or name, found.save, found.files, found.config)
+end
+
+return table.freeze {
+  folder = folder,
+  install = install,
+  lay = lay,
+  read = read,
+  scenario = scenario,
+  write = write,
+}

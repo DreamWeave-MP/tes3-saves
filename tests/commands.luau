@@ -1,0 +1,434 @@
+--!strict
+--!native
+-- `@tes3-saves/commands`: each command as a request and its result. These are the scenarios of
+-- jess's `jess save` tests for info, screenshot, check, and dump (`libs/cli/tests/save.rs`), on
+-- the same saves, written to disk as that harness wrote them. Every case reads a result table;
+-- none reads anything a command printed, because a command prints nothing.
+local commands = require '@tes3-saves/commands'
+local disk = require './disk'
+local dumps = require './dumps'
+local fixtures = require './fixtures'
+local plugins = require './plugins'
+local saves = require '@tes3-saves'
+local tes3 = require '@tes3'
+local test = require '@jess/test'
+local expect = test.expect
+local suite = test.new()
+
+local record, subrecord = plugins.record, plugins.subrecord
+local at, fieldsOf, listOf = dumps.at, dumps.fieldsOf, dumps.listOf
+
+--- A save alone in a fresh folder named `name`.
+local function saved(name: string, bytes: string, file: string?): string
+  return disk.write(jess.fs.join(disk.folder(name), file or 'Save.omwsave'), bytes)
+end
+
+local function has(list: { saves.Finding }, severity: string, problem: string, id: string): boolean
+  for _, finding in list do
+    if finding.severity == severity and finding.problem == problem and finding.id == id then
+      return true
+    end
+  end
+
+  return false
+end
+
+--- `(severity, problem, id)` of each finding, as one line each.
+local function findings(check: saves.Check): { string }
+  local out = {}
+  for _, finding in check.findings do
+    table.insert(out, `{finding.severity} {finding.problem} {finding.id}`)
+  end
+
+  return out
+end
+
+--- The value of the subrecord at `position` (1-based) of a save-only record's tree.
+local function subrecordAt(node: saves.Node, position: number, tag: string): saves.Node?
+  return at(listOf(at(node, 'subrecords')).items[position], tag)
+end
+
+suite.describe('info', function()
+  suite.it('reports an OpenMW save\'s metadata', function()
+    local path = saved('commands-info', fixtures.save())
+    local result = commands.info { path = path }
+    expect(result.command).toBe 'info'
+    expect(result.path).toBe(path)
+    local info = result.info
+    expect(info.format).toBe 'openmw'
+    expect(info.formatVersion).toBe(fixtures.CurrentFormatVersion)
+    expect(info.description).toBe 'synthetic'
+    expect(info.player).toEqual {
+      name = 'Tester',
+      level = 1,
+      classId = 'Archer',
+      className = 'Pilgrim',
+    }
+    expect(info.cell).toBe 'Seyda Neen'
+    expect(info.inGameTime).toEqual { gameHour = 8.5, day = 18, month = 7, year = 427 }
+    expect(info.dependencies).toEqual { 'Morrowind.esm' }
+    expect(info.screenshotBytes).toBe(4)
+    expect(info.currentHealth).toBe(42)
+  end)
+
+  suite.it('detects and describes a Morrowind save, and takes the game it is told', function()
+    local path = saved('commands-info-morrowind', fixtures.morrowindSave(), 'Quicksave.ess')
+    local info = commands.info({ path = path }).info
+    expect(info.format).toBe 'morrowind'
+    expect(info.formatVersion).toBeNil()
+    expect(info.description).toBe 'Quicksave'
+    expect(info.player).toEqual { name = 'Nerevar', level = 7, classId = 'Battlemage' }
+    expect(info.cell).toBe 'Balmora'
+    expect(info.inGameTime).toEqual { gameHour = 9.25, day = 3, month = 1, year = 427 }
+    expect(info.dependencies).toEqual { 'Morrowind.esm' }
+    expect(info.screenshotBytes).toBe(128 * 128 * 4)
+    expect(info.currentHealth).toBe(30)
+
+    -- Naming the game says the same; naming the other one refuses, naming the file.
+    expect(commands.info({ path = path, game = 'morrowind', encoding = 'win1252' }).info).toEqual(
+      info
+    )
+    expect(function() commands.info { path = path, game = 'openmw' } end).toThrow(
+      `'{path}' isn't an OpenMW save`
+    )
+  end)
+
+  suite.it('names the file that isn\'t a save, or isn\'t there', function()
+    local path = saved('commands-info-garbage', 'not a save at all')
+    expect(function() commands.info { path = path } end).toThrow(`failed to parse '{path}'`)
+    local missing = jess.fs.join(jess.fs.parent(path) :: string, 'Nowhere.omwsave')
+    expect(function() commands.info { path = missing } end).toThrow(`failed to read '{missing}'`)
+  end)
+
+  suite.it('reads a save\'s text in win1252 unless told another code page', function()
+    -- "Балмора" in Windows-1251, in place of "Balmora"; Windows-1252 reads it as "Áàëìîðà".
+    local bytes = string.gsub(fixtures.morrowindSave(), 'Balmora', '\193\224\235\236\238\240\224', 1)
+    local path = saved('commands-info-encoding', bytes, 'Quicksave.ess')
+    expect(commands.info({ path = path }).info.cell).toBe 'Áàëìîðà'
+    expect(commands.info({ path = path, encoding = 'win1251' }).info.cell).toBe 'Балмора'
+  end)
+end)
+
+suite.describe('screenshot', function()
+  suite.it('writes an OpenMW save\'s JPEG, backing up what it replaces unless told not to', function()
+    local path = saved('commands-screenshot', fixtures.save())
+    local output = jess.fs.join(jess.fs.parent(path) :: string, 'shot.jpg')
+    local first = commands.screenshot { path = path, output = output }
+    expect(first.command).toBe 'screenshot'
+    expect(first.format).toBe 'jpeg'
+    expect(first.bytes).toBe(4)
+    expect(first.output).toBe(output)
+    expect(first.dryRun).toBe(false)
+    expect(first.written).toEqual { path = output }
+    expect(disk.read(output)).toBe '\255\216\255\217'
+
+    -- Extracting again backs up the file it replaces.
+    local second = commands.screenshot { path = path, output = output }
+    expect(second.written).toEqual { path = output, backup = output .. '.bak' }
+    expect(disk.read(output .. '.bak')).toBe '\255\216\255\217'
+
+    -- `backup = false` replaces it without a copy.
+    local third = commands.screenshot { path = path, output = output, backup = false }
+    expect(third.written).toEqual { path = output }
+    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+
+    -- Without an output, the image goes next to the save.
+    local beside = jess.fs.join(jess.fs.parent(path) :: string, 'Save.jpg')
+    local fourth = commands.screenshot { path = path }
+    expect(fourth.output).toBe(beside)
+    expect(fourth.written).toEqual { path = beside }
+    expect(disk.read(beside)).toBe '\255\216\255\217'
+  end)
+
+  suite.it('says where the image would go and writes nothing on a dry run', function()
+    local path = saved('commands-screenshot-dry', fixtures.save())
+    local beside = jess.fs.join(jess.fs.parent(path) :: string, 'Save.jpg')
+    local result = commands.screenshot { path = path, dryRun = true }
+    expect(result.output).toBe(beside)
+    expect(result.bytes).toBe(4)
+    expect(result.dryRun).toBe(true)
+    expect(result.written).toBeNil()
+    expect(jess.fs.exists(beside)).toBe(false)
+  end)
+
+  suite.it('writes a Morrowind save\'s pixels as a TGA', function()
+    local path = saved('commands-screenshot-morrowind', fixtures.morrowindSave(), 'Quicksave.ess')
+    local output = jess.fs.join(jess.fs.parent(path) :: string, 'shot.tga')
+    local result = commands.screenshot { path = path, output = output }
+    expect(result.format).toBe 'tga'
+    expect(result.bytes).toBe(18 + 128 * 128 * 3)
+    local tga = disk.read(output)
+    expect(#tga).toBe(18 + 128 * 128 * 3)
+    -- An uncompressed true-color TGA.
+    expect(string.byte(tga, 3)).toBe(2)
+
+    local beside = commands.screenshot { path = path, dryRun = true }
+    expect(beside.output).toBe(jess.fs.join(jess.fs.parent(path) :: string, 'Quicksave.tga'))
+  end)
+end)
+
+suite.describe('check', function()
+  suite.it('checks the save\'s own structure without a configuration', function()
+    local path = saved('commands-check', fixtures.save())
+    local result = commands.check { path = path }
+    expect(result.command).toBe 'check'
+    expect(result.config).toBeNil()
+    expect(result.check.input).toBe(path)
+    expect(result.check.verdict).toBe 'structureValid'
+    expect(result.check.loads).toBe(true)
+    expect(result.check.loadOrderChecked).toBe(false)
+  end)
+
+  suite.it('reports a dangling CSTA moved-reference marker', function()
+    local path = disk.install('dangling-mvrf', 'commands-check-mvrf').save
+    local check = commands.check({ path = path }).check
+    expect(check.verdict).toBe 'invalidStructure'
+    expect(check.loads).toBe(false)
+    expect(check.structureProblems[1]).toContain '#2 CSTA MVRF #0 is not followed by NAME'
+  end)
+
+  suite.it('reports an incomplete CSTA object reference group', function()
+    local path = disk.install('incomplete-csta', 'commands-check-csta').save
+    local check = commands.check({ path = path }).check
+    expect(check.loads).toBe(false)
+    expect(check.structureProblems[1]).toContain 'CSTA OBJE #0 FRMR #1 is not followed by NAME'
+  end)
+
+  suite.it('refuses a Morrowind save', function()
+    local path = saved('commands-check-morrowind', fixtures.morrowindSave(), 'Quicksave.ess')
+    expect(function() commands.check { path = path } end).toThrow 'save check isn\'t supported for Morrowind saves'
+  end)
+
+  suite.it('calls uninstalled content strippable when the rest is installed', function()
+    local files = { ['Morrowind.esm'] = disk.scenario('plain').files['Morrowind.esm'] }
+    local function missing(dependencies: { string }): { saves.MissingContent }
+      local laid = disk.lay(
+        'commands-check-strippable',
+        fixtures.save(dependencies),
+        files,
+        'content=Morrowind.esm\n'
+      )
+      local result = commands.check { path = laid.save, config = laid.config }
+      expect(result.config).toBe(laid.config)
+      expect(result.check.loadOrderChecked).toBe(true)
+      return result.check.missingContent
+    end
+
+    expect(missing { 'Morrowind.esm', 'Gone.esp' }).toEqual {
+      { name = 'Gone.esp', strippable = true },
+    }
+
+    -- Two uninstalled files can't be told apart; each has to be stripped along with the other.
+    expect(missing { 'Morrowind.esm', 'Gone.esp', 'AlsoGone.esp' }).toEqual {
+      { name = 'Gone.esp', strippable = false },
+      { name = 'AlsoGone.esp', strippable = false },
+    }
+  end)
+
+  suite.it('reports what breaks with the configuration\'s load order', function()
+    local laid = disk.install('check-what-breaks', 'commands-check-breaks')
+    -- The configuration is named by its folder as well as by its file.
+    local check = commands.check({ path = laid.save, config = laid.root }).check
+    expect(check).toEqual(commands.check({ path = laid.save, config = laid.config }).check)
+    expect(check.verdict).toBe 'willNotLoad'
+    expect(check.loads).toBe(false)
+    expect(check.missingContent).toEqual {
+      { name = 'Gone.esp', strippable = true },
+      { name = 'Unticked.esp', strippable = true },
+    }
+    expect(has(check.findings, 'willNotLoad', 'missingBirthsign', 'gone_sign')).toBe(true)
+    expect(has(check.findings, 'broken', 'trappedObjectCannotBeOpened', 'gone_trap')).toBe(true)
+    -- Only the removed content's spell is dropped: the player-made one is a record of the save.
+    local dropped = 0
+    for _, count in check.droppedOnLoad do
+      dropped += count
+    end
+
+    expect(dropped).toBe(1)
+  end)
+
+  suite.it('guards the saved player record', function()
+    local laid = disk.install('player-record', 'commands-check-player')
+    -- Races.esp is no longer active: the save can't load with this load order.
+    local check = commands.check({ path = laid.save, config = laid.config }).check
+    expect(check.loads).toBe(false)
+    expect(has(check.findings, 'willNotLoad', 'missingPlayerRace', 'custom_race')).toBe(true)
+    expect(has(check.findings, 'broken', 'playerHeadMissing', 'custom_head')).toBe(true)
+  end)
+
+  suite.it('reads content in the configuration\'s code page, else the one it is told', function()
+    -- "Аист" in Windows-1251; Windows-1252 reads it as "Àèñò".
+    local files = disk.scenario('encoding-win1251').files
+    local bytes = fixtures.save() .. record('PLAY', subrecord('SIGN', fixtures.refId 'Аист'))
+    local function found(lines: string, encoding: commands.Encoding?): { string }
+      local laid =
+        disk.lay('commands-check-encoding', bytes, files, 'content=Morrowind.esm\n' .. lines)
+      local check =
+        commands.check({ path = laid.save, config = laid.config, encoding = encoding }).check
+      expect(check.loadOrderChecked).toBe(true)
+      return findings(check)
+    end
+
+    local missingSign = { 'willNotLoad missingBirthsign Аист' }
+    expect(found('encoding=win1251\n', nil)).toEqual {}
+    expect(found('', 'win1251')).toEqual {}
+    -- The configuration's code page is the one the engine reads content in.
+    expect(found('encoding=win1251\n', 'win1252')).toEqual {}
+    expect(found('encoding=win1252\n', 'win1251')).toEqual(missingSign)
+    expect(found('', nil)).toEqual(missingSign)
+  end)
+
+  suite.it('refuses a configuration that isn\'t there', function()
+    local laid = disk.install('plain', 'commands-check-config')
+    local nowhere = jess.fs.join(laid.root, 'nowhere')
+    expect(function() commands.check { path = laid.save, config = nowhere } end).toThrow(
+      `the OpenMW configuration '{nowhere}' doesn't exist`
+    )
+    -- A folder is a configuration only when it holds an openmw.cfg.
+    expect(function() commands.check { path = laid.save, config = laid.data } end).toThrow(
+      `the folder '{laid.data}' has no openmw.cfg`
+    )
+  end)
+end)
+
+suite.describe('dump', function()
+  suite.it('gives save records as readable values', function()
+    local path = saved('commands-dump', dumps.readable())
+    local result = commands.dump { path = path, selectors = { type = { 'PLAY' } } }
+    expect(result.command).toBe 'dump'
+    expect(result.mode).toBe 'records'
+    local records = assert(result.records)
+    expect(#records).toBe(1)
+    local play = records[1]
+    expect(at(play, 'record')).toBe(3)
+    expect(at(play, 'type')).toBe 'PLAY'
+    expect(subrecordAt(play, 1, 'FRMR')).toBe '1 (generated)'
+    expect(subrecordAt(play, 2, 'NAME')).toBe 'player'
+    local placement = subrecordAt(play, 3, 'DATA')
+    expect(listOf(at(placement, 'position')).items).toEqual {
+      { kind = 'float', value = 1.5 },
+      { kind = 'float', value = 2 },
+      { kind = 'float', value = 3.25 },
+    }
+
+    expect(listOf(at(placement, 'rotation')).items).toEqual {
+      { kind = 'float', value = 0 },
+      { kind = 'float', value = 0 },
+      { kind = 'float', value = 1.5 },
+    }
+    expect(subrecordAt(play, 4, 'LUAS')).toBe '1 (scripts/quests.lua)'
+    local data = fieldsOf(subrecordAt(play, 5, 'LUAD'))
+    expect(data.keys).toEqual { 'stage', 'giver' }
+    expect(data.values[1]).toBe(20)
+    expect(at(at(data.values[2], 'object'), 'index')).toBe(7)
+    expect(at(at(data.values[2], 'object'), 'content_file')).toBe(1)
+    expect(subrecordAt(play, 7, 'FRMR')).toBe '42 (Tribunal.esm)'
+    expect(subrecordAt(play, 8, 'NAME')).toBe 'tribunal_sword'
+
+    local header = assert(commands.dump({ path = path, selectors = { type = 'SAVE' } }).records)[1]
+    expect(at(header, 'type')).toBe 'SaveHeader'
+    expect(listOf(at(header, 'dependencies')).items).toEqual { 'Morrowind.esm', 'Tribunal.esm' }
+  end)
+
+  suite.it('gives a byte layout with raw', function()
+    local path = saved('commands-dump-raw', dumps.readable())
+    local result = commands.dump { path = path, raw = true, selectors = { type = 'PLAY' } }
+    expect(result.mode).toBe 'layout'
+    local layouts = assert(result.layouts)
+    expect(#layouts).toBe(1)
+    expect(layouts[1].index).toBe(3)
+    expect(layouts[1].type).toBe 'PLAY'
+    local first = assert(layouts[1].subrecords)[1]
+    expect(first.type).toBe 'FRMR'
+    expect(first.size).toBe(8)
+    expect(first.range['end'] - first.range.start).toBe(16)
+
+    -- With `list` too, each record's place without its subrecords.
+    local listed = assert(commands.dump({ path = path, raw = true, list = true }).layouts)
+    expect(#listed).toBe(4)
+    expect(listed[1].type).toBe 'TES3'
+    expect(listed[4].subrecords).toBeNil()
+  end)
+
+  suite.it('decodes dynamic records, whose ids are typed RefIds', function()
+    local path = saved('commands-dump-dynamic', dumps.dynamic())
+    local records =
+      assert(commands.dump({ path = path, selectors = { type = { 'NPC_', 'GLOB' } } }).records)
+    expect(#records).toBe(2)
+    local npc, global = records[1], records[2]
+    expect(at(npc, 'type')).toBe 'Npc'
+    expect(at(npc, 'id')).toBe 'player'
+    expect(at(npc, 'name')).toBe 'Ashur'
+    expect(at(npc, 'race')).toBe 'Dark Elf'
+    expect(listOf(at(npc, 'spells')).items).toEqual { 'fireball' }
+    local item = listOf(at(npc, 'inventory')).items[1]
+    expect(at(item, 'id')).toBe 'iron dagger'
+    expect(at(item, 'count')).toBe(3)
+    expect(at(global, 'type')).toBe 'GlobalVariable'
+    expect(at(global, 'id')).toBe 'TimesDied'
+  end)
+
+  suite.it('lists records by number, type, and id', function()
+    local path = saved('commands-dump-list', dumps.dynamic())
+    local result = commands.dump { path = path, list = true }
+    expect(result.mode).toBe 'list'
+    expect(result.listed).toEqual {
+      { record = 0, type = 'TES3' },
+      { record = 1, type = 'SAVE' },
+      { record = 2, type = 'NPC_', id = 'player' },
+      { record = 3, type = 'GLOB', id = 'TimesDied' },
+    }
+
+    expect(commands.dump({ path = path, list = true, selectors = { id = '^times' } }).listed).toEqual {
+      { record = 3, type = 'GLOB', id = 'TimesDied' },
+    }
+  end)
+
+  suite.it('dumps a Morrowind save: its header, then typed records', function()
+    local path = saved('commands-dump-morrowind', fixtures.morrowindSave(), 'Quicksave.ess')
+    local records = assert(commands.dump({ path = path }).records)
+    expect(#records).toBe(5)
+    expect(at(records[1], 'type')).toBe 'SaveHeader'
+    expect(at(at(records[1], 'player'), 'name')).toBe 'Nerevar'
+    expect(at(records[2], 'type')).toBe 'GlobalVariable'
+    expect(at(records[5], 'type')).toBe 'Npc'
+    expect(assert(commands.dump({ path = path, raw = true }).layouts)[1].type).toBe 'TES3'
+  end)
+
+  suite.it('writes the selected records to a file of their own', function()
+    local path = saved('commands-dump-extract', dumps.dynamic())
+    local output = jess.fs.join(jess.fs.parent(path) :: string, 'globals.esp')
+    local request: commands.DumpRequest =
+      { path = path, selectors = { type = 'GLOB' }, rawOutput = output, header = true }
+    local preview = table.clone(request)
+    preview.dryRun = true
+    local planned = commands.dump(preview)
+    expect(planned.mode).toBe 'extract'
+    expect(planned.output).toBe(output)
+    expect(planned.dryRun).toBe(true)
+    expect(planned.written).toBeNil()
+    expect(jess.fs.exists(output)).toBe(false)
+
+    local result = commands.dump(request)
+    expect(result.bytes).toBe(planned.bytes)
+    expect(result.written).toEqual { path = output }
+    -- The save's own header, then the global: a TES3 file, though no longer a save.
+    local extracted = tes3.open(disk.read(output))
+    expect(extracted:count()).toBe(2)
+    expect(extracted:tag(1)).toBe 'GLOB'
+    expect(extracted:header().recordCount).toBe(1)
+
+    -- A file already there is backed up, unless told not to.
+    expect(commands.dump(request).written).toEqual { path = output, backup = output .. '.bak' }
+    request.backup = false
+    expect(commands.dump(request).written).toEqual { path = output }
+    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+  end)
+
+  suite.it('refuses a pattern that isn\'t a regex', function()
+    local path = saved('commands-dump-regex', fixtures.save())
+    expect(function() commands.dump { path = path, selectors = { id = '(' } } end).toThrow 'invalid regex \'(\''
+  end)
+end)
+
+return suite

@@ -3,6 +3,7 @@
 -- What the package gives anything that writes a report or a dump outside Luau: `snakeCase`, the
 -- spelling jess-save's JSON, YAML, and TOML have, and `tree`, a record's readable value with the
 -- order of its fields, its floats, and its missing values.
+local dumps = require './dumps'
 local fixtures = require './fixtures'
 local plugins = require './plugins'
 local saves = require '@tes3-saves'
@@ -47,62 +48,8 @@ local function plain(node: saves.Node): unknown
   return out
 end
 
-local function fieldsOf(node: saves.Node?): saves.Fields
-  assert(type(node) == 'table' and node.kind == 'map', 'expected fields')
-  return node
-end
-
-local function listOf(node: saves.Node?): saves.List
-  assert(type(node) == 'table' and node.kind == 'list', 'expected a list')
-  return node
-end
-
---- The value `fields` holds under `key`.
-local function at(node: saves.Node?, key: string): saves.Node?
-  local fields = fieldsOf(node)
-  local position = table.find(fields.keys, key)
-  return if position then fields.values[position] else nil
-end
-
-local function luaString(text: string): tes3.LuaValue return { kind = 'string', value = text } end
-
-local function luaNumber(value: number): tes3.LuaValue return { kind = 'number', value = value } end
-
---- The save `save_dump_decodes_save_records_readably` dumps (`libs/cli/tests/save.rs`): two Lua
---- scripts, and a player with a placement, a script's data, and an item from the second content
---- file.
-local function readable(): string
-  local state: tes3.LuaValue = {
-    kind = 'table',
-    entries = {
-      { key = luaString 'stage', value = luaNumber(20) },
-      {
-        key = luaString 'giver',
-        value = { kind = 'object', ref = { index = 7, contentFile = 1 } },
-      },
-    },
-  }
-
-  local placement = string.pack('<ffffff', 1.5, 2, 3.25, 0, 0, 1.5)
-  return fixtures.save({ 'Morrowind.esm', 'Tribunal.esm' }, nil, true)
-    .. record(
-      'LUAM',
-      subrecord('LUAP', 'scripts/first.lua') .. subrecord('LUAP', 'scripts/quests.lua')
-    )
-    .. record(
-      'PLAY',
-      table.concat {
-        subrecord('FRMR', fixtures.formId(1, -1)),
-        subrecord('NAME', fixtures.refId 'player'),
-        subrecord('DATA', placement),
-        subrecord('LUAS', string.pack('<i4', 1)),
-        subrecord('LUAD', tes3.save.encodeLuaData(state)),
-        subrecord('ICNT', plugins.u32(1)),
-        subrecord('FRMR', fixtures.formId(42, 1)),
-        subrecord('NAME', fixtures.refId 'tribunal_sword'),
-      }
-    )
-end
+local at, fieldsOf, listOf = dumps.at, dumps.fieldsOf, dumps.listOf
+local readable, luaString, luaNumber = dumps.readable, dumps.luaString, dumps.luaNumber
 
 suite.describe('snakeCase', function()
   suite.it('spells codes and field names as jess-save writes them', function()

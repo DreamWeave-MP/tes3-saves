@@ -1,0 +1,216 @@
+--!strict
+--!native
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+
+--[[
+Where a save's records and subrecords sit in its bytes (what `dump` gives with `raw`), and the
+selected records' bytes as a file of their own (`rawOutput`).
+
+`layout` and `references` are `@tes3cmd`'s, from its `src/display.luau` (its commit 0c85ddd), and
+`extractMatching` is its `src/edit.luau`'s (its commit 811a89d), unchanged: byte layouts and
+extraction are that package's, and it depends on this one, so this one can't ask it for them.
+When they have a home below both packages, this file goes.
+]]
+
+local Select = require './select'
+local tes3 = require '@tes3'
+
+type Plugin = tes3.Plugin
+type Selector = Select.Selector
+
+local Tes3Tag = tes3.tags.code 'TES3'
+
+export type SubrecordLayout = {
+  index: number,
+  type: string,
+  size: number,
+  range: { start: number, ['end']: number },
+  field: string?,
+  value: string?,
+}
+
+export type RecordLayout = {
+  index: number,
+  type: string,
+  id: string?,
+  flags: number,
+  size: number,
+  range: { start: number, ['end']: number },
+  subrecords: { SubrecordLayout }?,
+}
+
+--- One CELL reference: its position among the cell's references (0-based), and its subrecords.
+export type ReferenceLayout = { index: number, subrecords: { SubrecordLayout } }
+
+--- Record `index`'s typed string fields by subrecord position (0-based).
+local function fieldsBySubrecord(plugin: Plugin, index: number): { [number]: tes3.StringField }
+  local fields: { [number]: tes3.StringField } = {}
+  for _, field in tes3.records.stringFields(plugin, index) do
+    fields[field.subrecord] = field
+  end
+
+  return fields
+end
+
+--- Where the subrecord at `position` (0-based) of record `index` sits. An edited record has no
+--- place in the original bytes, so its subrecords sit at the record's end, empty.
+local function subrecordLayout(
+  plugin: Plugin,
+  index: number,
+  position: number,
+  sub: tes3.Subrecord,
+  field: tes3.StringField?
+): SubrecordLayout
+  local range = { start = sub.start, ['end'] = sub.finish }
+  if plugin:isDirty(index) then
+    local _, finish = plugin:range(index)
+    range = { start = finish, ['end'] = finish }
+  end
+
+  return {
+    index = position,
+    type = tes3.tags.display(sub.code),
+    size = sub.size,
+    range = range,
+    field = field and field.name,
+    value = field and field.value,
+  }
+end
+
+--- Where record `index` and (with `subrecords`) its subrecords that pass the selector's
+--- subrecord filters sit in the plugin's bytes; `fields` adds their typed string fields.
+local function layout(
+  plugin: Plugin,
+  index: number,
+  selector: Select.Selector,
+  options: { subrecords: boolean?, fields: boolean? }?
+): RecordLayout
+  local start, finish = plugin:range(index)
+  local id = tes3.records.fieldId(plugin, index) or tes3.records.id(plugin, index)
+  local out: RecordLayout = {
+    index = index,
+    type = tes3.tags.display(plugin:code(index)),
+    id = if id and id ~= '' then id else nil,
+    flags = plugin:flags(index),
+    size = plugin:size(index),
+    range = { start = start, ['end'] = finish },
+  }
+
+  if not options or not options.subrecords then return out end
+
+  local fields = if options.fields then fieldsBySubrecord(plugin, index) else {}
+  local list = {}
+  for ordinal, sub in plugin:subrecords(index) do
+    if not Select.matchesSubrecord(selector, plugin, index, sub) then continue end
+
+    table.insert(list, subrecordLayout(plugin, index, ordinal - 1, sub, fields[ordinal - 1]))
+  end
+
+  if #list > 0 then out.subrecords = list end
+
+  return out
+end
+
+--- The CELL references of record `index` that pass the selector's instance filters, each with
+--- every subrecord it is made of; `fields` adds their typed string fields. None for another
+--- record.
+local function references(
+  plugin: Plugin,
+  index: number,
+  selector: Select.Selector,
+  fields: boolean?
+): { ReferenceLayout }
+  local groups = plugin:cellGroups(index)
+  if not groups then return {} end
+
+  local named = if fields then fieldsBySubrecord(plugin, index) else {}
+  local subs = plugin:subrecords(index)
+  local out = {}
+  for _, reference in Select.matchingCellReferences(selector, plugin, index) do
+    local group = groups.references[reference + 1]
+    local list = {}
+    for position = group[1], group[2] do
+      table.insert(list, subrecordLayout(plugin, index, position, subs[position + 1], named[position]))
+    end
+
+    table.insert(out, { index = reference, subrecords = list })
+  end
+
+  return out
+end
+
+--- The raw bytes of every record `selector` selects but TES3, picked as `select.selection` picks
+--- them: with instance filters a CELL keeps only the references they select. With
+--- `includeHeader`, a plugin: the original header first, its record count updated.
+local function extractMatching(plugin: Plugin, selector: Selector, includeHeader: boolean): buffer
+  -- Each picked record's bytes, copied once into the result.
+  local spans: { number } = {}
+  local length = 0
+  local function take(index: number)
+    local _, start, finish = plugin:span(index)
+    table.insert(spans, index)
+    length += finish - start
+  end
+
+  if includeHeader then
+    if plugin:count() == 0 then error('empty plugin', 0) end
+
+    if plugin:code(0) ~= Tes3Tag then error('first record is not TES3', 0) end
+
+    take(0)
+  end
+
+  local trims: { { position: number, dropped: { number } } } = {}
+  local position = if includeHeader then 1 else 0
+  for index = 0, plugin:count() - 1 do
+    if plugin:code(index) == Tes3Tag then continue end
+
+    local picked = Select.selection(selector, plugin, index)
+    if not picked then continue end
+
+    local references = picked.references
+    if references then
+      local groups = plugin:cellGroups(index)
+      local count = if groups then #groups.references else 0
+      local kept: { [number]: boolean } = {}
+      for _, ref in references do
+        kept[ref] = true
+      end
+
+      local dropped = {}
+      for ref = 0, count - 1 do
+        if not kept[ref] then table.insert(dropped, ref) end
+      end
+
+      if #dropped > 0 then table.insert(trims, { position = position, dropped = dropped }) end
+    end
+
+    take(index)
+    position += 1
+  end
+
+  local bytes = buffer.create(length)
+  local at = 0
+  for _, index in spans do
+    local source, start, finish = plugin:span(index)
+    buffer.copy(bytes, at, source, start, finish - start)
+    at += finish - start
+  end
+
+  if not includeHeader and #trims == 0 then return bytes end
+
+  local extracted = tes3.open(bytes, { encoding = plugin.encoding })
+  for _, trim in trims do
+    extracted:deleteCellReferences(trim.position, trim.dropped)
+  end
+
+  if includeHeader then extracted:updateRecordCount() end
+
+  return extracted:save()
+end
+
+return table.freeze {
+  extractMatching = extractMatching,
+  layout = layout,
+  references = references,
+}
