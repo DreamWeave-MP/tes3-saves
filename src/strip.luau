@@ -451,13 +451,14 @@ local function formatOccurrence(provenance: Provenance, at: number, tag: string?
   return if tag then `{name}:{tag}` else name
 end
 
-local function dependsOn(plugin: Plugin, dependency: string, target: string): boolean
-  -- masters throws on a header that doesn't read; that's the error to report.
-  local ok, masters = pcall(plugin.masters, plugin)
-  if not ok then error(`failed to read masters of '{dependency}': {masters}`, 0) end
+local function dependsOn(index: LoadOrder.Index, dependency: string, target: string): boolean
+  local masters = index.masters
+  if not masters then
+    error(`failed to read masters of '{dependency}': {index.mastersProblem}`, 0)
+  end
 
-  for _, master in masters :: { tes3.Master } do
-    if string.lower(master.name) == string.lower(target) then return true end
+  for _, master in masters do
+    if string.lower(master) == string.lower(target) then return true end
   end
 
   return false
@@ -495,17 +496,17 @@ local function missingTargetProvenance(
     end
 
     -- A resolved path came from the load order.
-    local plugin, problem =
-      LoadOrder.openContent(order :: LoadOrder.LoadOrder, path, encoding, cache)
-    if not plugin then
+    local indexed, problem =
+      LoadOrder.index(order :: LoadOrder.LoadOrder, path, encoding, ids, cache)
+    if not indexed then
       incomplete = true
       table.insert(unreadable, { dependency, problem :: string })
       continue
     end
 
-    if dependsOn(plugin, dependency, name) then table.insert(dependents, dependency) end
+    if dependsOn(indexed, dependency, name) then table.insert(dependents, dependency) end
 
-    for _, token in LoadOrder.ids(plugin, ids).tokens do
+    for _, token in indexed.ids.tokens do
       if token then known[token] = true end
     end
   end
@@ -583,10 +584,10 @@ local function provenanceOf(
   -- Only ids the target defines get an entry, so the target is read first and the other content
   -- files are only searched for those.
   if Records.isRecordContentFile(targetPath) then
-    local plugin, problem = LoadOrder.openContent(reader, targetPath, encoding, cache)
-    if not plugin then error(`failed to read dependency '{name}' ({targetPath}): {problem}`, 0) end
+    local indexed, problem = LoadOrder.index(reader, targetPath, encoding, ids, cache)
+    if not indexed then error(`failed to read dependency '{name}' ({targetPath}): {problem}`, 0) end
 
-    local found = LoadOrder.ids(plugin, ids)
+    local found = indexed.ids
     for slot, token in found.tokens do
       if not token then continue end
 
@@ -606,8 +607,8 @@ local function provenanceOf(
     if not path or not Records.isRecordContentFile(path) then continue end
 
     local index = ordinal - 1
-    local plugin, problem = LoadOrder.openContent(reader, path, encoding, cache)
-    if not plugin then
+    local indexed, problem = LoadOrder.index(reader, path, encoding, ids, cache)
+    if not indexed then
       -- An unreadable earlier dependency may define records the target also defines, so treat it
       -- like an unresolved one; later dependencies can't change provenance.
       unresolvedBeforeTarget = unresolvedBeforeTarget or index < target
@@ -615,7 +616,7 @@ local function provenanceOf(
       continue
     end
 
-    if index ~= target and dependsOn(plugin, dependency, name) then
+    if index ~= target and dependsOn(indexed, dependency, name) then
       table.insert(dependents, dependency)
     end
 
@@ -625,8 +626,20 @@ local function provenanceOf(
     -- A token's ids are only read as text when it has more than one key here.
     local lowTag: { [number]: string }, lowAt: { [number]: number } = {}, {}
     local highTag: { [number]: string }, highAt: { [number]: number } = {}, {}
-    local found = LoadOrder.ids(plugin, ids)
-    local function idAt(slot: number): string return tes3.records.id(plugin, slot - 1) :: string end
+    local found = indexed.ids
+    -- An index holds no id's text, so the file is opened again for the few that are compared
+    -- as text: a file that was indexed opens.
+    local reopened: Plugin? = nil
+    local function idAt(slot: number): string
+      if not reopened then
+        local plugin, why = LoadOrder.openContent(reader, path, encoding)
+        if not plugin then error(`failed to read dependency '{dependency}' ({path}): {why}`, 0) end
+
+        reopened = plugin
+      end
+
+      return tes3.records.id(reopened :: Plugin, slot - 1) :: string
+    end
 
     for slot, token in found.tokens do
       if not token or not types[token] then continue end
@@ -700,17 +713,15 @@ local function sortedKeys(set: { [string]: boolean }): { string }
   return out
 end
 
---- The records the content file at `path` defines: how many, by type, and the first few.
-local function targetRecords(
+--- The records the content file at `path` defines (how many, by type, and the first few), and
+--- the file's size. The file is open only in here.
+local function scanTarget(
   order: LoadOrder.LoadOrder,
   path: string,
   limit: number,
-  encoding: string,
-  cache: LoadOrder.Cache
-): { [string]: unknown }
-  if not Records.isRecordContentFile(path) then return { total = 0, byType = {}, samples = {} } end
-
-  local plugin, problem = LoadOrder.openContent(order, path, encoding, cache)
+  encoding: string
+): ({ [string]: unknown }, number)
+  local plugin, problem, size = LoadOrder.openContent(order, path, encoding)
   if not plugin then error(`failed to read dependency '{path}': {problem}`, 0) end
 
   -- Every type and id once, ids compared exactly (interned straight from the file); the samples
@@ -761,7 +772,21 @@ local function targetRecords(
     if #samples > limit then table.remove(samples) end
   end
 
-  return { total = total, byType = byType, samples = samples }
+  return { total = total, byType = byType, samples = samples }, size
+end
+
+--- The records the content file at `path` defines: how many, by type, and the first few.
+local function targetRecords(
+  order: LoadOrder.LoadOrder,
+  path: string,
+  limit: number,
+  encoding: string
+): { [string]: unknown }
+  if not Records.isRecordContentFile(path) then return { total = 0, byType = {}, samples = {} } end
+
+  local scan, size = scanTarget(order, path, limit, encoding)
+  LoadOrder.letGo(size)
+  return scan
 end
 
 export type ReferenceScan = {
@@ -1917,7 +1942,7 @@ local function strip(
     alsoRemoved[string.lower(name)] = true
   end
 
-  -- Every content file is read once per strip, however many steps read it.
+  -- Every content file is indexed once per strip, however many steps ask what it defines.
   local cache: LoadOrder.Cache = {}
   local ids = LoadOrder.pool()
   local steps = {}
@@ -1947,7 +1972,7 @@ local function strip(
     others[string.lower(dependency)] = nil
     local records = Records.all(plugin)
     local targetScan = if targetResolution.path and order
-      then targetRecords(order, targetResolution.path, limit, contentEncoding, cache)
+      then targetRecords(order, targetResolution.path, limit, contentEncoding)
       else nil
     local provenance = provenanceOf(
       records,

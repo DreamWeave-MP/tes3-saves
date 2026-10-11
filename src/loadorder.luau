@@ -32,81 +32,61 @@ type Context<Self> = {
   read encoding: string?,
   read content: (self: Self) -> { Content },
   read resolve: (self: Self, path: string) -> string?,
-  read readFile: (self: Self, path: string) -> buffer?,
 }
 
---- The load order an `@openmw` Context describes.
+--- The load order an `@openmw` Context describes. A content file is a loose file at the top of a
+--- data folder, and the Context resolves its name to that file, so it is read as the file it is:
+--- the Context's own read goes through its whole VFS, archives and all, which a load order has no
+--- use for.
 local function fromOpenMw<Self>(context: Self & Context<Self>): LoadOrder
-  local content = context:content()
-  local names: { [string]: string } = {}
-  for _, entry in content do
-    if entry.path then names[entry.path] = entry.name end
-  end
-
   return {
-    content = content,
-    resolve = function(name: string): string?
-      local path = context:resolve(name)
-      if path then names[path] = name end
-
-      return path
-    end,
-    -- Context reads VFS-relative names; LoadOrder readers receive resolved physical paths.
-    read = function(path: string): buffer?
-      local name = names[path]
-      if name then return context:readFile(name) end
-
-      return jess.fs.readBuffer(path)
-    end,
+    content = context:content(),
+    resolve = function(name: string): string? return context:resolve(name) end,
+    read = function(path: string): buffer? return jess.fs.readBuffer(path) end,
     encoding = context.encoding,
   }
 end
 
---- Content files already opened, by path and code page, and why the ones that didn't open didn't.
-export type Cache = { [string]: { plugin: tes3.Plugin?, problem: string? } }
-
-local openContent: (order: LoadOrder, path: string, encoding: string, cache: Cache?) -> (tes3.Plugin?, string?)
-
---- Opens the content file at `path` in `encoding` (no cache), or says why it couldn't.
-local function openUncached(
+--- Reads and opens the content file at `path` in `encoding`, or says why it couldn't, as
+--- jess-save's `read_content_file` does; and with the plugin, the file's size. The plugin holds
+--- the whole file; whoever opens one lets it go as soon as it has what it came for (`letGo`).
+local function openContent(
   order: LoadOrder,
   path: string,
   encoding: string
-): (tes3.Plugin?, string?)
+): (tes3.Plugin?, string?, number)
   local reader = order.read
   local bytes = if reader then reader(path) else jess.fs.readBuffer(path)
   if not bytes then
-    return nil, `failed to read '{path}': No such file or directory (os error 2)`
+    return nil, `failed to read '{path}': No such file or directory (os error 2)`, 0
   end
+
+  local size = if type(bytes) == 'string' then #bytes else buffer.len(bytes)
 
   -- tes3.open throws on a file that doesn't frame; that's the reason.
   local ok, opened = pcall(
     function(): tes3.Plugin return tes3.open(bytes, { encoding = encoding }) end
   )
-  if not ok then return nil, `failed to parse '{path}': {opened}` end
+  if not ok then return nil, `failed to parse '{path}': {opened}`, size end
 
-  return opened :: tes3.Plugin, nil
+  return opened :: tes3.Plugin, nil, size
 end
 
---- Reads and opens the content file at `path` in `encoding`, or says why it couldn't, as
---- jess-save's `read_content_file` does; with a cache, each path and code page once.
-openContent = function(
-  order: LoadOrder,
-  path: string,
-  encoding: string,
-  cache: Cache?
-): (tes3.Plugin?, string?)
-  if not cache then return openUncached(order, path, encoding) end
+--- How many bytes of content files have been let go since the last collection, and how many it
+--- takes to run one.
+local released = 0
+local CollectEvery = 8 * 1024 * 1024
 
-  local key = `{encoding}\0{path}`
-  local found = cache[key]
-  if not found then
-    local plugin, problem = openUncached(order, path, encoding)
-    found = { plugin = plugin, problem = problem }
-    cache[key] = found
-  end
+--- Says a content file of `size` bytes has been read and let go. A load order's files are far
+--- more than a check or a strip keeps of them, and the collector doesn't know a master's bytes
+--- are garbage until it next runs, by which time several masters' are; so once enough has been
+--- let go, a collection is run. Call it once nothing still refers to the plugin.
+local function letGo(size: number)
+  released += size
+  if released < CollectEvery then return end
 
-  return found.plugin, found.problem
+  released = 0
+  jess.bench.collect()
 end
 
 export type Pool = dream_intern_Pool
@@ -123,16 +103,9 @@ export type Ids = {
   codes: { number },
 }
 
-local IdCache =
-  setmetatable({} :: { [tes3.Plugin]: { pool: Pool, ids: Ids } }, { __mode = 'k' })
-
 --- Every record's id (interned in `ids`, straight from the file's bytes: no string is made) and
---- type in a content file, read once however many scans ask: a strip's target scan, provenance,
---- and check all walk the same files.
+--- type in a content file.
 local function ids(plugin: tes3.Plugin, ids: Pool): Ids
-  local found = IdCache[plugin]
-  if found and found.pool == ids then return found.ids end
-
   local count = plugin:count()
   local tokens: { number | false }, codes: { number } = {}, {}
   for index = 0, count - 1 do
@@ -141,9 +114,65 @@ local function ids(plugin: tes3.Plugin, ids: Pool): Ids
     codes[index + 1] = plugin:code(index)
   end
 
-  local result = { tokens = tokens, codes = codes }
-  IdCache[plugin] = { pool = ids, ids = result }
-  return result
+  return { tokens = tokens, codes = codes }
+end
+
+--- What a strip keeps of a content file once it has read it: every record's id and type, and
+--- the masters the file names, or why its header doesn't give them.
+export type Index = { ids: Ids, masters: { string }?, mastersProblem: string? }
+
+--- Content files already indexed, by path and code page, and why the ones that didn't open didn't.
+export type Cache = { [string]: { index: Index?, problem: string? } }
+
+local function indexOf(
+  order: LoadOrder,
+  path: string,
+  encoding: string,
+  pool: Pool
+): (Index?, string?, number)
+  local plugin, problem, size = openContent(order, path, encoding)
+  if not plugin then return nil, problem, size end
+
+  local names: { string }? = nil
+  -- masters throws on a header that doesn't read; whoever asks for the masters is told why.
+  local ok, masters = pcall(plugin.masters, plugin)
+  if ok then
+    local list = {}
+    for _, master in masters :: { tes3.Master } do
+      table.insert(list, master.name)
+    end
+
+    names = list
+  end
+
+  return {
+    ids = ids(plugin, pool),
+    masters = names,
+    mastersProblem = if ok then nil else tostring(masters),
+  },
+    nil,
+    size
+end
+
+--- The index of the content file at `path` read in `encoding`, its ids interned in `pool`, or
+--- why the file couldn't be opened; each path and code page is read once for a cache. The file
+--- itself is let go as soon as it is indexed: a load order is read one file at a time, and only
+--- the indexes are kept.
+local function index(
+  order: LoadOrder,
+  path: string,
+  encoding: string,
+  pool: Pool,
+  cache: Cache
+): (Index?, string?)
+  local key = `{encoding}\0{path}`
+  local found = cache[key]
+  if found then return found.index, found.problem end
+
+  local made, problem, size = indexOf(order, path, encoding, pool)
+  cache[key] = { index = made, problem = problem }
+  letGo(size)
+  return made, problem
 end
 
 --- The token of an id a save holds (UTF-8) among content ids read in `encoding`, or nil when no
@@ -160,6 +189,8 @@ end
 return table.freeze {
   fromOpenMw = fromOpenMw,
   ids = ids,
+  index = index,
+  letGo = letGo,
   openContent = openContent,
   pool = pool,
   token = token,

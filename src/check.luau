@@ -210,6 +210,26 @@ local function dynamicIds(
   return known
 end
 
+--- Adds every id the content file at `path` defines to `known`, or says why the file couldn't be
+--- read. The file is open only in here, so that it can be let go once this returns.
+local function defines(
+  order: LoadOrder.LoadOrder,
+  path: string,
+  encoding: string,
+  ids: LoadOrder.Pool,
+  known: { [number]: boolean }
+): (string?, number)
+  local plugin, problem, size = LoadOrder.openContent(order, path, encoding)
+  if not plugin then return problem, size end
+
+  for index = 0, plugin:count() - 1 do
+    local source, at, length = tes3.records.idSpan(plugin, index)
+    if source then known[ids:intern(source, at, length)] = true end
+  end
+
+  return nil, size
+end
+
 --- Every record id defined by the active content, read in `encoding`, and by the save's own
 --- dynamic records, as tokens of `ids`.
 local function knownIds(
@@ -224,17 +244,13 @@ local function knownIds(
     local path = content.path
     if not path or not Records.isRecordContentFile(path) then continue end
 
-    local plugin, problem = LoadOrder.openContent(order, path, encoding)
-    if not plugin then
+    local problem, size = defines(order, path, encoding, ids, known)
+    LoadOrder.letGo(size)
+    if problem then
       table.insert(
         warnings,
         `could not read active content '{content.name}' ({problem}); ids it defines are reported as missing`
       )
-      continue
-    end
-
-    for _, token in LoadOrder.ids(plugin, ids).tokens do
-      if token then known[token] = true end
     end
   end
 
