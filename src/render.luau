@@ -150,11 +150,7 @@ local function counts(value: unknown): Value
   end
 
   table.sort(names)
-  local pairs: { { unknown } } = {}
-  for _, name in names do
-    table.insert(pairs, { name, plain(byName[name]) })
-  end
-
+  local pairs: { { unknown } } = [for name in names => { name, plain(byName[name]) }]
   return serialize.struct(pairs)
 end
 
@@ -411,14 +407,7 @@ local function tree(node: Values.Node): Value
 
   if node.kind == 'float' then return serialize.float(node.value) end
 
-  if node.kind == 'list' then
-    local items: { Value } = table.create(#node.items)
-    for position, item in node.items do
-      items[position] = tree(item)
-    end
-
-    return serialize.array(items)
-  end
+  if node.kind == 'list' then return serialize.array([for item in node.items => tree(item)]) end
 
   local map = serialize.map()
   for position, key in node.keys do
@@ -689,8 +678,8 @@ local function jsonRecord(out: { string }, node: Values.Node, resumed: boolean, 
     local last = #fields.keys
     local head: Values.Fields = {
       kind = 'map',
-      keys = table.move(fields.keys, 1, last - 1, 1, {}),
-      values = table.move(fields.values, 1, last - 1, 1, {}),
+      keys = fields.keys[1:last - 1],
+      values = fields.values[1:last - 1],
       verbatim = fields.verbatim,
     }
 
