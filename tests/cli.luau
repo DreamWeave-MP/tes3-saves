@@ -1019,6 +1019,36 @@ suite.describe('render', function()
     )
   end)
 
+  suite.it('spells a whole number in all its digits', function()
+    -- An index, a size, or an offset is written out however long it is, with no exponent and no
+    -- point, up to the last whole number a number holds exactly.
+    local numbers: { saves.Node } = {
+      0,
+      7,
+      -1,
+      4294967295,
+      100000000000000,
+      1000000000000000,
+      -1000000000000000,
+      123456789012345,
+      9007199254740991,
+      -9007199254740991,
+    }
+
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Save.omwsave',
+      mode = 'records',
+      records = { fields({ 'numbers' }, { list(numbers) }) },
+    }
+
+    local digits = '0, 7, -1, 4294967295, 100000000000000, 1000000000000000, -1000000000000000, '
+      .. '123456789012345, 9007199254740991, -9007199254740991'
+    local packed = string.gsub(digits, ' ', '')
+    expect(cli.render(result)).toBe(`records:\n- numbers: [{digits}]\n`)
+    expect(cli.render(result, { format = 'json' })).toBe(`\{"records":[\{"numbers":[{packed}]}]}\n`)
+  end)
+
   suite.it('writes a listing, and no records at all', function()
     local result: commands.DumpResult = {
       command = 'dump',
