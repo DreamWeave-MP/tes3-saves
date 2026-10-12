@@ -93,18 +93,78 @@ local function single(value: number): number
   return buffer.readf32(Scratch, 0)
 end
 
+--- The format that writes a number in scientific notation with each count of digits.
+local Scientific: { string } = [for precision in range(1, 17) => `%.{precision - 1}e`]
+
+--- The powers of ten a double holds exactly, 10^0 first.
+local PowersOfTen: { number } = { 1 }
+for power = 1, 22 do
+  PowersOfTen[power + 1] = PowersOfTen[power] * 10
+end
+
+--- The most of an f32's value that the next f32 is away.
+local SingleSpacing = 2 ^ -23
+
+--- Whether the f32 `magnitude` is at least 10^`exponent`, for exponents from -12 to 22. It is
+--- told exactly: the power is exact, or the product with its inverse is, being an f32's 24 bits
+--- times a power of five under 2^29.
+local function reaches(magnitude: number, exponent: number): boolean
+  if exponent >= 0 then return magnitude >= PowersOfTen[exponent + 1] end
+
+  return magnitude * PowersOfTen[1 - exponent] >= 1
+end
+
+--- The power of ten the first digit of the f32 `magnitude` counts, or nil outside the range the
+--- arithmetic here is exact in.
+local function decade(magnitude: number): number?
+  local exponent = math.floor(math.log10(magnitude))
+  if exponent < -8 or exponent > 20 then return nil end
+
+  -- A logarithm can land on the wrong side of a power of ten.
+  if not reaches(magnitude, exponent) then return exponent - 1 end
+
+  return if reaches(magnitude, exponent + 1) then exponent + 1 else exponent
+end
+
+--- Whether a decimal of `precision` digits can read back as the f32 `magnitude`, whose first
+--- digit counts 10^`exponent`. Such a decimal is a whole count of its last digit's place, and it
+--- reads back only from within an f32's spacing of the value; so when the value is farther than
+--- that from every whole count, none does, and writing the digits out to see is saved. Every
+--- step is exact, and where one couldn't be the answer is that it can.
+local function near(magnitude: number, exponent: number, precision: number): boolean
+  local places = precision - 1 - exponent
+  if places < 0 then
+    if places < -22 then return true end
+
+    local unit = PowersOfTen[1 - places]
+    local over = math.fmod(magnitude, unit)
+    local reach = magnitude * SingleSpacing
+    return over <= reach or unit - over <= reach
+  end
+
+  if places > 12 then return true end
+
+  local scaled = magnitude * PowersOfTen[places + 1]
+  local over = scaled - math.floor(scaled)
+  local reach = scaled * SingleSpacing
+  return over <= reach or 1 - over <= reach
+end
+
 --- The fewest decimal digits that read back as `magnitude` (as an f32 when `narrow`), without a
 --- point, and the decimal exponent of the first one.
 local function shortest(magnitude: number, narrow: boolean): (string, number)
+  local exponent = if narrow then decade(magnitude) else nil
   for precision = 1, 17 do
-    local text = string.format(`%.{precision - 1}e`, magnitude)
+    if exponent and not near(magnitude, exponent, precision) then continue end
+
+    local text = string.format(Scientific[precision], magnitude)
     local back = tonumber(text) :: number
     if (if narrow then single(back) else back) ~= magnitude then continue end
 
-    local mantissa, exponent = string.match(text, '^(%d[%.%d]*)e([%+%-]%d+)$')
+    local mantissa, power = string.match(text, '^(%d[%.%d]*)e([%+%-]%d+)$')
     local digits = string.gsub(mantissa :: string, '%.', '')
     digits = string.gsub(digits, '0+$', '')
-    return if digits == '' then '0' else digits, tonumber(exponent) :: number
+    return if digits == '' then '0' else digits, tonumber(power) :: number
   end
 
   return string.format('%.17g', magnitude), 0
