@@ -195,8 +195,12 @@ local function roleOf(provenance: Provenance, id: string): string?
 end
 
 --- Fixes for the save state that refers to records only the removed content file defined.
-local function pushTargetIntroducedEdits(records: { Record }, provenance: Provenance, plan: Plan)
-  for _, field in Scan.refIdFields(records) do
+local function pushTargetIntroducedEdits(
+  fields: { Scan.RefIdField },
+  provenance: Provenance,
+  plan: Plan
+)
+  for _, field in fields do
     local record, position, meaning = field.record, field.subrecord, field.meaning
     if subrecordPlannedForDeletion(plan, record.index, position) then continue end
 
@@ -382,10 +386,13 @@ local function pushRemovedDependencyReference(plan: Plan, hit: Scan.Hit)
   blocked 'known_reference_points_at_the_dependency_being_removed'
 end
 
---- Every edit removing dependency `index` (0-based) from the save needs.
+--- Every edit removing dependency `index` (0-based) from the save needs, given the save's
+--- records, the ids its `fields` hold, and the content files its `hits` point at.
 local function plannedEdits(
   plugin: Plugin,
   records: { Record },
+  fields: { Scan.RefIdField },
+  hits: { Scan.Hit },
   index: number,
   dependency: string,
   provenance: Provenance?
@@ -437,9 +444,9 @@ local function plannedEdits(
     break
   end
 
-  if provenance then pushTargetIntroducedEdits(records, provenance, plan) end
+  if provenance then pushTargetIntroducedEdits(fields, provenance, plan) end
 
-  for _, hit in Scan.contentFileHits(records) do
+  for _, hit in hits do
     if recordPlannedForDeletion(plan, hit.record.index) then continue end
 
     if subrecordPlannedForDeletion(plan, hit.record.index, hit.subrecord) then continue end
@@ -491,6 +498,7 @@ end
 --- `target_only_unknown`, which blocks the strip.
 local function missingTargetProvenance(
   records: { Record },
+  fields: { Scan.RefIdField },
   order: LoadOrder.LoadOrder?,
   dependencies: { string },
   resolutions: { Resolution },
@@ -534,7 +542,7 @@ local function missingTargetProvenance(
 
   local role = if incomplete then 'target_only_unknown' else 'introduced_by_target'
   local roles: { [number]: string }, at: { [number]: number } = {}, {}
-  for _, field in Scan.refIdFields(records) do
+  for _, field in fields do
     if field.id == '' then continue end
 
     local token = LoadOrder.token(ids, field.id, encoding, true) :: number
@@ -564,6 +572,7 @@ end
 --- dependencies need it as a master.
 local function provenanceOf(
   records: { Record },
+  fields: { Scan.RefIdField },
   order: LoadOrder.LoadOrder?,
   dependencies: { string },
   resolutions: { Resolution },
@@ -576,6 +585,7 @@ local function provenanceOf(
   if not resolutions[target + 1].path then
     return missingTargetProvenance(
       records,
+      fields,
       order,
       dependencies,
       resolutions,
@@ -818,7 +828,7 @@ export type ReferenceScan = {
 
 --- The save's references to records the target defines that the plan doesn't already fix.
 local function saveReferences(
-  records: { Record },
+  fields: { Scan.RefIdField },
   provenance: Provenance,
   limit: number,
   spell: Spell
@@ -826,7 +836,7 @@ local function saveReferences(
   local total = 0
   local byRole: Counts, byMeaning: Counts, byRecordType: Counts = {}, {}, {}
   local samples = {}
-  for _, field in Scan.refIdFields(records) do
+  for _, field in fields do
     local record, position, meaning = field.record, field.subrecord, field.meaning
     if Scan.inTargetCstaGroup(record, position, provenance.targetIndex) then continue end
 
@@ -2078,11 +2088,16 @@ local function strip(
     local others = table.clone(alsoRemoved)
     others[string.lower(dependency)] = nil
     local records = Records.all(plugin)
+    -- Provenance, the plan, and the report each go through the ids the save's fields hold and
+    -- the content files its references point at: both are read from the save once a step.
+    local fields = Scan.refIdFields(records)
+    local hits = Scan.contentFileHits(records)
     local targetScan = if targetResolution.path and order
       then targetRecords(order, targetResolution.path, limit, contentEncoding)
       else nil
     local provenance = provenanceOf(
       records,
+      fields,
       order,
       deps,
       stepResolutions,
@@ -2093,9 +2108,8 @@ local function strip(
       ids
     )
     local format = formatSupport(metadata.formatVersion)
-    local edits = plannedEdits(plugin, records, index, dependency, provenance)
-    local references = if provenance then saveReferences(records, provenance, limit, spell) else nil
-    local hits = Scan.contentFileHits(records)
+    local edits = plannedEdits(plugin, records, fields, hits, index, dependency, provenance)
+    local references = if provenance then saveReferences(fields, provenance, limit, spell) else nil
     local fileReferences = contentFileReferences(hits, index, dependency, limit, spell)
     local coverage = Scan.coverage(records)
     local blockers = blockersOf(format, provenance, coverage, references, edits)
