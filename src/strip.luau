@@ -71,49 +71,74 @@ local GroupDeletions: { [string]: boolean } = {
   delete_stale_state_field = true,
 }
 
-local function recordPlannedForDeletion(edits: { Edit }, record: number): boolean
-  for _, edit in edits do
-    if edit.operation == 'delete_target_save_record' and edit.recordIndex == record then
-      return true
-    end
-  end
-
-  return false
-end
-
-local function subrecordPlannedForDeletion(edits: { Edit }, record: number, sub: number): boolean
-  for _, edit in edits do
-    if not GroupDeletions[edit.operation] or edit.recordIndex ~= record then continue end
-
-    local start, finish = edit.subrecordIndex, edit.subrecordEndIndex
-    if start and finish and sub >= start and sub < finish then return true end
-  end
-
-  return false
-end
-
-local function alreadyPlanned(
+--- The edits a removal needs, in the order they were planned, and what they already delete. A
+--- plan asks that of every field and reference it comes to, and a save's edits are too many to
+--- look through each time.
+type Plan = {
   edits: { Edit },
-  operation: string,
-  record: number,
-  start: number
-): boolean
-  for _, edit in edits do
-    if
-      edit.operation == operation
-      and edit.recordIndex == record
-      and edit.subrecordIndex == start
-    then
-      return true
-    end
+  --- The records an edit deletes whole.
+  records: { [number]: boolean },
+  --- The subrecords a group deletion covers, by record.
+  covered: { [number]: { [number]: boolean } },
+  --- The subrecords edits start at, by operation and record.
+  starts: { [string]: { [number]: { [number]: boolean } } },
+}
+
+--- Adds `edit` to the plan.
+local function push(plan: Plan, edit: Edit)
+  table.insert(plan.edits, edit)
+  local operation, record, start = edit.operation, edit.recordIndex, edit.subrecordIndex
+  if not record then return end
+
+  if operation == 'delete_target_save_record' then plan.records[record] = true end
+
+  if not start then return end
+
+  local byRecord = plan.starts[operation]
+  if not byRecord then
+    byRecord = {}
+    plan.starts[operation] = byRecord
   end
 
-  return false
+  local starts = byRecord[record]
+  if not starts then
+    starts = {}
+    byRecord[record] = starts
+  end
+
+  starts[start] = true
+  local finish = edit.subrecordEndIndex
+  if not finish or not GroupDeletions[operation] then return end
+
+  local covered = plan.covered[record]
+  if not covered then
+    covered = {}
+    plan.covered[record] = covered
+  end
+
+  for position = start, finish - 1 do
+    covered[position] = true
+  end
+end
+
+local function recordPlannedForDeletion(plan: Plan, record: number): boolean
+  return plan.records[record] == true
+end
+
+local function subrecordPlannedForDeletion(plan: Plan, record: number, sub: number): boolean
+  local covered = plan.covered[record]
+  return covered ~= nil and covered[sub] == true
+end
+
+local function alreadyPlanned(plan: Plan, operation: string, record: number, start: number): boolean
+  local byRecord = plan.starts[operation]
+  local starts = byRecord and byRecord[record]
+  return starts ~= nil and starts[start] == true
 end
 
 --- A group deletion, unless one already covers the group.
 local function pushGroup(
-  edits: { Edit },
+  plan: Plan,
   operation: string,
   record: Record,
   range: Scan.Range,
@@ -121,9 +146,9 @@ local function pushGroup(
   meaning: string,
   reason: string
 )
-  if alreadyPlanned(edits, operation, record.index, range.start) then return end
+  if alreadyPlanned(plan, operation, record.index, range.start) then return end
 
-  table.insert(edits, {
+  push(plan, {
     operation = operation,
     status = 'planned',
     recordIndex = record.index,
@@ -170,14 +195,10 @@ local function roleOf(provenance: Provenance, id: string): string?
 end
 
 --- Fixes for the save state that refers to records only the removed content file defined.
-local function pushTargetIntroducedEdits(
-  records: { Record },
-  provenance: Provenance,
-  edits: { Edit }
-)
+local function pushTargetIntroducedEdits(records: { Record }, provenance: Provenance, plan: Plan)
   for _, field in Scan.refIdFields(records) do
     local record, position, meaning = field.record, field.subrecord, field.meaning
-    if subrecordPlannedForDeletion(edits, record.index, position) then continue end
+    if subrecordPlannedForDeletion(plan, record.index, position) then continue end
 
     if roleOf(provenance, field.id) ~= 'introduced_by_target' then continue end
 
@@ -186,7 +207,7 @@ local function pushTargetIntroducedEdits(
       if not group then error('target-introduced CSTA RefId is not inside a reference group', 0) end
 
       pushGroup(
-        edits,
+        plan,
         'delete_csta_reference_group',
         record,
         group,
@@ -208,7 +229,7 @@ local function pushTargetIntroducedEdits(
       end
 
       pushGroup(
-        edits,
+        plan,
         'delete_inventory_item_group',
         record,
         group,
@@ -224,7 +245,7 @@ local function pushTargetIntroducedEdits(
       -- Object groups owned by the removed dependency are deleted whole by the RefNum pass.
       if Scan.inTargetCstaGroup(record, position, provenance.targetIndex) then continue end
 
-      pushGroup(edits, fix.operation, record, fix.range, position, meaning, fix.reason)
+      pushGroup(plan, fix.operation, record, fix.range, position, meaning, fix.reason)
       continue
     end
 
@@ -235,7 +256,7 @@ local function pushTargetIntroducedEdits(
       end
 
       pushGroup(
-        edits,
+        plan,
         'delete_stolen_item_group',
         record,
         group,
@@ -247,9 +268,9 @@ local function pushTargetIntroducedEdits(
     end
 
     local reason = Scan.deletePolicy(record.tag, meaning)
-    if not reason or recordPlannedForDeletion(edits, record.index) then continue end
+    if not reason or recordPlannedForDeletion(plan, record.index) then continue end
 
-    table.insert(edits, {
+    push(plan, {
       operation = 'delete_target_save_record',
       status = 'planned',
       recordIndex = record.index,
@@ -285,12 +306,12 @@ local function contentFileEdit(
 end
 
 --- What happens to a reference that points at the content file being removed.
-local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
+local function pushRemovedDependencyReference(plan: Plan, hit: Scan.Hit)
   local record, position = hit.record, hit.subrecord
   local tag = Records.tagAt(record, position)
   local function blocked(reason: string)
-    table.insert(
-      edits,
+    push(
+      plan,
       contentFileEdit(hit, 'rewrite_or_drop_removed_dependency_reference', 'blocked', nil, reason)
     )
   end
@@ -305,7 +326,7 @@ local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
       return
     end
 
-    if alreadyPlanned(edits, 'delete_csta_reference_group', record.index, group.start) then
+    if alreadyPlanned(plan, 'delete_csta_reference_group', record.index, group.start) then
       return
     end
 
@@ -317,7 +338,7 @@ local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
       'CSTA_reference_group_points_at_the_dependency_being_removed'
     )
     edit.subrecordIndex, edit.subrecordEndIndex = group.start, group.finish
-    table.insert(edits, edit)
+    push(plan, edit)
     return
   end
 
@@ -328,7 +349,7 @@ local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
       return
     end
 
-    if alreadyPlanned(edits, 'delete_moved_reference_group', record.index, group.start) then
+    if alreadyPlanned(plan, 'delete_moved_reference_group', record.index, group.start) then
       return
     end
 
@@ -340,13 +361,13 @@ local function pushRemovedDependencyReference(edits: { Edit }, hit: Scan.Hit)
       'moved_reference_marker_points_at_the_dependency_being_removed'
     )
     edit.subrecordIndex, edit.subrecordEndIndex = group.start, group.finish
-    table.insert(edits, edit)
+    push(plan, edit)
     return
   end
 
   if tag == 'LUAD' then
-    table.insert(
-      edits,
+    push(
+      plan,
       contentFileEdit(
         hit,
         'rewrite_or_drop_removed_lua_reference',
@@ -369,12 +390,12 @@ local function plannedEdits(
   dependency: string,
   provenance: Provenance?
 ): { Edit }
-  local edits: { Edit } = {}
+  local plan: Plan = { edits = {}, records = {}, covered = {}, starts = {} }
   if dependency ~= '' then
     for _, master in plugin:masters() do
       if string.lower(master.name) ~= string.lower(dependency) then continue end
 
-      table.insert(edits, {
+      push(plan, {
         operation = 'remove_tes3_master_dependency',
         status = 'planned',
         recordIndex = 0,
@@ -397,7 +418,7 @@ local function plannedEdits(
       if Records.tagAt(record, position) ~= 'DEPE' then continue end
 
       if seen == index then
-        table.insert(edits, {
+        push(plan, {
           operation = 'remove_save_dependency',
           status = 'planned',
           recordIndex = record.index,
@@ -416,18 +437,18 @@ local function plannedEdits(
     break
   end
 
-  if provenance then pushTargetIntroducedEdits(records, provenance, edits) end
+  if provenance then pushTargetIntroducedEdits(records, provenance, plan) end
 
   for _, hit in Scan.contentFileHits(records) do
-    if recordPlannedForDeletion(edits, hit.record.index) then continue end
+    if recordPlannedForDeletion(plan, hit.record.index) then continue end
 
-    if subrecordPlannedForDeletion(edits, hit.record.index, hit.subrecord) then continue end
+    if subrecordPlannedForDeletion(plan, hit.record.index, hit.subrecord) then continue end
 
     if hit.contentFile == index then
-      pushRemovedDependencyReference(edits, hit)
+      pushRemovedDependencyReference(plan, hit)
     elseif hit.contentFile > index then
-      table.insert(
-        edits,
+      push(
+        plan,
         contentFileEdit(
           hit,
           'remap_content_file_index',
@@ -439,7 +460,7 @@ local function plannedEdits(
     end
   end
 
-  return edits
+  return plan.edits
 end
 
 --[[ Provenance ]]
