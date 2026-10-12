@@ -62,7 +62,7 @@ local function isPlayerRecord(record: Record): boolean
   local name = Records.first(record, 'NAME')
   if not name then return false end
 
-  local id = Records.refId(payload(record, name))
+  local id = Records.refIdAt(record, name)
   return id ~= nil and string.lower(id) == 'player'
 end
 
@@ -231,7 +231,7 @@ local function refIdFields(records: { Record }, protected: boolean?): { RefIdFie
         inventoryItemsRemaining = math.max(inventoryItemsRemaining - 1, 0)
       end
 
-      local id = Records.refId(payload(record, position))
+      local id = Records.refIdAt(record, position)
       if not id then continue end
 
       if not protected and isProtected(record.tag, meaning, id) then continue end
@@ -399,7 +399,7 @@ local function inTargetCstaGroup(record: Record, position: number, target: numbe
   local group, frmr = cstaReferenceGroup(record, position)
   if not group then return false end
 
-  local index, contentFile = Records.wideFormId(payload(record, frmr))
+  local index, contentFile = Records.formIdAt(record, frmr)
   return index ~= nil and contentFile == target
 end
 
@@ -555,7 +555,7 @@ local function contentFileHits(records: { Record }): { Hit }
     for position = 0, record.count - 1 do
       local meaning = formIdField(record, position)
       if meaning then
-        local index, contentFile = Records.wideFormId(payload(record, position))
+        local index, contentFile = Records.formIdAt(record, position)
         if index then
           table.insert(hits, {
             record = record,

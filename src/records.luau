@@ -148,11 +148,47 @@ local function refId(data: string): string?
   return value
 end
 
+--- The RefId subrecord `position` of `record` holds, read where it is: what `refId` makes of the
+--- payload, without the payload being made a string first. A scan reads every id a save holds.
+local function refIdAt(record: Record, position: number): string?
+  local source = record.source
+  local at, size = span(record, position)
+  if size == 0 then return nil end
+
+  local kind = buffer.readu8(source, at)
+  if kind == 0 then return nil end
+
+  if kind == 1 then
+    if size < 5 then return nil end
+
+    local length = buffer.readu32(source, at + 1)
+    if 4 + length > size - 1 then return nil end
+
+    return trimNul(buffer.readstring(source, at + 5, length))
+  end
+
+  if kind == 2 then return trimNul(buffer.readstring(source, at + 1, size - 1)) end
+
+  local value = trimNul(buffer.readstring(source, at, size))
+  if value == '' or hasControl(value) then return nil end
+
+  return value
+end
+
 --- An 8-byte `{ u32 index, i32 content file }` FormId, or nil for any other length.
 local function wideFormId(data: string): (number?, number)
   if #data ~= 8 then return nil, 0 end
 
   return u32At(data, 1), i32At(data, 5)
+end
+
+--- The FormId subrecord `position` of `record` holds, read where it is, or nil for a payload
+--- that isn't 8 bytes.
+local function formIdAt(record: Record, position: number): (number?, number)
+  local at, size = span(record, position)
+  if size ~= 8 then return nil, 0 end
+
+  return buffer.readu32(record.source, at), buffer.readi32(record.source, at + 4)
 end
 
 --- The count an ICNT holds (0 when it's short).
@@ -190,6 +226,7 @@ return table.freeze {
   i32At = i32At,
   u32At = u32At,
   first = first,
+  formIdAt = formIdAt,
   hasControl = hasControl,
   inventoryCount = inventoryCount,
   isRecordContentFile = isRecordContentFile,
@@ -197,6 +234,7 @@ return table.freeze {
   payload = payload,
   record = record,
   refId = refId,
+  refIdAt = refIdAt,
   span = span,
   tagAt = tagAt,
   trimNul = trimNul,

@@ -322,7 +322,7 @@ local function pushRemovedDependencyReference(plan: Plan, hit: Scan.Hit)
     local group, frmr = Scan.cstaReferenceGroup(record, position)
     if not group then error('CSTA reference is not inside a reference group', 0) end
 
-    local index, contentFile = Records.wideFormId(Records.payload(record, frmr))
+    local index, contentFile = Records.formIdAt(record, frmr)
     if not (index and contentFile == hit.contentFile) then
       blocked 'known_reference_points_at_the_dependency_being_removed'
       return
@@ -1518,7 +1518,7 @@ local function verifyRemapped(plugin: Plugin, edits: { Edit })
       continue
     end
 
-    local index, contentFile = Records.wideFormId(Records.payload(snapshot, position))
+    local index, contentFile = Records.formIdAt(snapshot, position)
     if not index then error('dry-run remapped field is no longer an OpenMW FormId', 0) end
 
     if index ~= localIndex or contentFile ~= new then

@@ -220,7 +220,7 @@ local function dynamicIds(
     local name = Records.first(record, 'NAME')
     if not name then continue end
 
-    local id = Records.refId(Records.payload(record, name))
+    local id = Records.refIdAt(record, name)
     if id then known[LoadOrder.token(ids, id, encoding, true) :: number] = true end
   end
 
