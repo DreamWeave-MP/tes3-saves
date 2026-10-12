@@ -136,14 +136,7 @@ local function indexOf(
   local names: { string }? = nil
   -- masters throws on a header that doesn't read; whoever asks for the masters is told why.
   local ok, masters = pcall(plugin.masters, plugin)
-  if ok then
-    local list = {}
-    for _, master in masters :: { tes3.Master } do
-      table.insert(list, master.name)
-    end
-
-    names = list
-  end
+  if ok then names = [for master in masters :: { tes3.Master } => master.name] end
 
   return {
     ids = ids(plugin, pool),
