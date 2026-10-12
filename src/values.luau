@@ -320,16 +320,20 @@ local function printable(data: string): string?
   return tes3.lossyUtf8(data)
 end
 
---- A typed RefId spelled as OpenMW spells it (`#-2 -9` for an exterior cell); string ids must be
---- printable, since this also guesses whether an unknown subrecord holds one.
-local function typedRefIdText(data: string): string?
-  local source = buffer.fromstring(data)
-  local id = tes3.save.decodeRefId(source, 0, #data)
+--- The `length` bytes of `source` at `offset` as a typed RefId spelled as OpenMW spells it (`#-2
+--- -9` for an exterior cell); string ids must be printable, since this also guesses whether an
+--- unknown subrecord holds one.
+local function typedRefIdTextAt(source: buffer, offset: number, length: number): string?
+  local id = tes3.save.decodeRefId(source, offset, length)
   if not id or id.kind == 'empty' then return nil end
 
   if id.kind == 'string' then return printable(id.value) end
 
   return tes3.save.refIdText(id)
+end
+
+local function typedRefIdText(data: string): string?
+  return typedRefIdTextAt(buffer.fromstring(data), 0, #data)
 end
 
 --- Four bytes are usually an i32 count or flag, or an f32; a float's bit pattern reads as a huge int.
@@ -345,9 +349,10 @@ local function fourByteNumber(data: string): Node
   return int
 end
 
---- Best-effort decoding of a subrecord no classifier knows.
-local function genericValue(data: string): Node
-  local text = typedRefIdText(data) or printable(data)
+--- Best-effort decoding of a subrecord no classifier knows: `data`, which is the `length` bytes
+--- of `source` at `offset`.
+local function genericValue(data: string, source: buffer, offset: number, length: number): Node
+  local text = typedRefIdTextAt(source, offset, length) or printable(data)
   if text then return text end
 
   if #data == 4 then return fourByteNumber(data) end
@@ -360,11 +365,12 @@ local function genericValue(data: string): Node
   return `{#data} bytes`
 end
 
---- A placement (CellRef DATA, object POS_, door DODT): three position then three rotation f32s.
-local function placement(data: string): Node?
-  if #data ~= 24 then return nil end
+--- A placement (CellRef DATA, object POS_, door DODT): three position then three rotation f32s,
+--- in the `length` bytes of `source` at `offset`.
+local function placement(source: buffer, offset: number, length: number): Node?
+  if length ~= 24 then return nil end
 
-  local numbers = [for index in range(0, 5) => Records.f32At(data, 1 + index * 4)]
+  local numbers = [for index in range(0, 5) => buffer.readf32(source, offset + index * 4)]
   return fields { { 'position', floats(numbers, 1, 3) }, { 'rotation', floats(numbers, 4, 6) } }
 end
 
@@ -547,10 +553,12 @@ local function subrecordsValue(
 
     if position < first then continue end
 
-    local data = Records.payload(record, position)
+    local source = record.source
+    local at, size = Records.span(record, position)
+    local data = buffer.readstring(source, at, size)
     local value: Node? = nil
     if tag == 'LUAD' then
-      value = luaPayload(record.source, Records.span(record, position))
+      value = luaPayload(source, at, size)
     elseif tag == 'LUAS' and #data == 4 then
       local id = Records.i32At(data)
       local path = if id >= 0 then indexes.luaScripts[id + 1] else nil
@@ -562,7 +570,7 @@ local function subrecordsValue(
       and isObjectState(record)
       and (tag == 'DATA' or tag == 'POS_' or tag == 'DODT')
     then
-      value = placement(data)
+      value = placement(source, at, size)
     end
 
     if value == nil and tag == 'EQIP' then value = equipment(data) end
@@ -577,9 +585,12 @@ local function subrecordsValue(
 
     if value == nil and meaning then value = Records.refId(data) end
 
-    if value == nil then value = genericValue(data) end
+    if value == nil then value = genericValue(data, source, at, size) end
 
-    table.insert(subrecords, fields({ { tag, value } }, true))
+    table.insert(
+      subrecords,
+      { kind = 'map' :: 'map', keys = { tag }, values = { value :: Node }, verbatim = true }
+    )
   end
 
   local value = fields {
