@@ -419,7 +419,7 @@ local function plannedEdits(
     if record.tag ~= 'SAVE' then continue end
 
     local seen = 0
-    for position = 0, #record.subs - 1 do
+    for position = 0, record.count - 1 do
       if Records.tagAt(record, position) ~= 'DEPE' then continue end
 
       if seen == index then
@@ -1380,32 +1380,41 @@ local function payloadNow(rewrite: Rewrite, position: number): string
   return Records.payload(rewrite.record, position)
 end
 
---- A record's bytes with a rewrite's payloads in place of the ones it had.
-local function rewritten({record: {source, subs}, start, payloads}: Rewrite): buffer
-  local length = sum[
-    for ordinal, sub in enumerate(subs)
-    => if payloads[ordinal - 1]
-      then SubrecordHeader + buffer.len(payloads[ordinal - 1])
-      else sub.finish - sub.start
-  ]
+--- A record's bytes with a rewrite's payloads in place of the ones it had. Whatever lies between
+--- two subrecords that are replaced is copied in one piece.
+local function rewritten({record, start, payloads}: Rewrite): buffer
+  local {source, count} = record
+  local finish = start + RecordHeader
+  if count > 0 then
+    local _, last = Records.bounds(record, count - 1)
+    finish = last
+  end
 
+  local length = finish - start - RecordHeader
+  local positions: { number } = {}
+  for position, payload in payloads do
+    local _, size = Records.span(record, position)
+    length += buffer.len(payload) - size
+    table.insert(positions, position)
+  end
+
+  table.sort(positions)
   local out = buffer.create(RecordHeader + length)
   buffer.copy(out, 0, source, start, RecordHeader)
-  local at = RecordHeader
-  for ordinal, sub in subs do
-    local payload = payloads[ordinal - 1]
-    if not payload then
-      buffer.copy(out, at, source, sub.start, sub.finish - sub.start)
-      at += sub.finish - sub.start
-      continue
-    end
-
-    buffer.copy(out, at, source, sub.start, 4)
+  local at, copied = RecordHeader, start + RecordHeader
+  for _, position in positions do
+    local subStart, subFinish = Records.bounds(record, position)
+    local payload = payloads[position]
+    -- What is untouched up to this subrecord and its tag, then the new size and payload.
+    buffer.copy(out, at, source, copied, subStart - copied + 4)
+    at += subStart - copied
     buffer.writeu32(out, at + 4, buffer.len(payload))
     buffer.copy(out, at + SubrecordHeader, payload)
     at += SubrecordHeader + buffer.len(payload)
+    copied = subFinish
   end
 
+  buffer.copy(out, at, source, copied, finish - copied)
   return out
 end
 
@@ -1432,17 +1441,18 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
     end
 
     local rewrite = rewriteOf(rewrites, record)
-    local sub = rewrite.record.subs[position + 1]
-    if not sub then error('remap_content_file_index subrecord index is out of bounds', 0) end
+    local tag = Records.tagAt(rewrite.record, position)
+    if not tag then error('remap_content_file_index subrecord index is out of bounds', 0) end
 
     -- The payload as it is now: a remap of this subrecord before this one has replaced it.
-    local source, at, size = rewrite.record.source, sub.payload, sub.size
+    local source = rewrite.record.source
+    local at, size = Records.span(rewrite.record, position)
     local replaced = rewrite.payloads[position]
     if replaced then
       source, at, size = replaced, 0, buffer.len(replaced)
     end
 
-    if sub.tag == 'LUAD' then
+    if tag == 'LUAD' then
       local old =
         need(edit.oldContentFileIndex, 'remap_content_file_index LUAD edit has no source index')
       local key = `{record}:{position}:{old}`
@@ -1463,7 +1473,7 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
     end
 
     if size ~= 8 then
-      error(`{plugin:tag(record)} {sub.tag} payload is not an 8-byte OpenMW FormId`, 0)
+      error(`{plugin:tag(record)} {tag} payload is not an 8-byte OpenMW FormId`, 0)
     end
 
     local payload = buffer.create(8)
@@ -1476,10 +1486,10 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
 end
 
 local function verifyRemapped(plugin: Plugin, edits: { Edit })
-  -- Nothing here changes the save: a record's subrecords are listed once, and a LUAD payload's
-  -- references read once, for however many remaps there are to look for in them.
-  local listed: { [number]: { tes3.Subrecord } } = {}
-  local references: { [tes3.Subrecord]: { tes3.LuaRef } } = {}
+  -- Nothing here changes the save: a record is read once, and a LUAD payload's references once,
+  -- for however many remaps there are to look for in them.
+  local listed: { [number]: Record } = {}
+  local references: { [number]: { [number]: { tes3.LuaRef } } } = {}
   for _, edit in edits do
     if edit.status ~= 'planned' or edit.operation ~= 'remap_content_file_index' then continue end
 
@@ -1492,27 +1502,28 @@ local function verifyRemapped(plugin: Plugin, edits: { Edit })
       error('remap_content_file_index verification record index is out of bounds', 0)
     end
 
-    local subs = listed[record]
-    if not subs then
-      subs = plugin:subrecords(record)
-      listed[record] = subs
+    local snapshot = listed[record]
+    if not snapshot then
+      snapshot = Records.record(plugin, record)
+      listed[record] = snapshot
+      references[record] = {}
     end
 
-    local sub = subs[position + 1]
-    if not sub then
+    local tag = Records.tagAt(snapshot, position)
+    if not tag then
       error('remap_content_file_index verification subrecord index is out of bounds', 0)
     end
 
-    local source = plugin:span(record)
-    if sub.tag == 'LUAD' then
-      local refs = references[sub]
+    if tag == 'LUAD' then
+      local refs = references[record][position]
       if not refs then
         -- decodeLuaData throws on a payload that isn't serialized Lua.
-        local ok, value = pcall(tes3.save.decodeLuaData, source, sub.payload, sub.size)
+        local ok, value =
+          pcall(tes3.save.decodeLuaData, snapshot.source, Records.span(snapshot, position))
         if not ok then error(`failed to decode remapped LUAD: {value}`, 0) end
 
         refs = tes3.save.luaRefs(value :: tes3.LuaValue)
-        references[sub] = refs
+        references[record][position] = refs
       end
 
       local found = any[for ref in refs => ref.index == localIndex and ref.contentFile == new]
@@ -1521,7 +1532,7 @@ local function verifyRemapped(plugin: Plugin, edits: { Edit })
       continue
     end
 
-    local index, contentFile = Records.wideFormId(buffer.readstring(source, sub.payload, sub.size))
+    local index, contentFile = Records.wideFormId(Records.payload(snapshot, position))
     if not index then error('dry-run remapped field is no longer an OpenMW FormId', 0) end
 
     if index ~= localIndex or contentFile ~= new then
@@ -1551,8 +1562,8 @@ local function renumberEquipment(rewrite: Rewrite, countAt: number, removed: { n
 
   local snapshot = rewrite.record
   -- This inventory's trailing subrecords run until the next object group or inventory.
-  local finish = #snapshot.subs
-  for subrecordIndex = countAt + 1, #snapshot.subs - 1 do
+  local finish = snapshot.count
+  for subrecordIndex = countAt + 1, snapshot.count - 1 do
     local tag = Records.tagAt(snapshot, subrecordIndex)
     if tag == 'ICNT' or tag == 'OBJE' then
       finish = subrecordIndex

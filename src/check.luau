@@ -85,9 +85,9 @@ local function cstaProblems(plugin: Plugin): { tes3.Diagnostic }
     if plugin:code(index) ~= cstaCode then continue end
 
     local record = Records.record(plugin, index)
-    for position = 0, #record.subs - 1 do
+    for position = 0, record.count - 1 do
       local tag = Records.tagAt(record, position)
-      local offset = record.subs[position + 1].start
+      local offset = Records.bounds(record, position)
       if tag == 'OBJE' then
         if Records.tagAt(record, position + 1) ~= 'FRMR' then
           table.insert(out, {

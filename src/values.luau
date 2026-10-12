@@ -456,7 +456,7 @@ end
 --- plain strings, and NPCO items and NPCS spells become fixed 32-byte names.
 local function pluginLayout(plugin: Plugin, index: number, record: Record): string?
   local parts = {}
-  for position = 0, #record.subs - 1 do
+  for position = 0, record.count - 1 do
     local tag = Records.tagAt(record, position) :: string
     local data = Records.payload(record, position)
     if tag == 'NPCO' then
@@ -531,7 +531,7 @@ local function subrecordsValue(
   local subrecords: { Node } = {}
   local inventoryItemsRemaining = 0
   local first = from or 0
-  local last = #record.subs - 1
+  local last = record.count - 1
   if limit then last = math.min(last, first + limit - 1) end
 
   for position = 0, last do
@@ -549,9 +549,8 @@ local function subrecordsValue(
 
     local data = Records.payload(record, position)
     local value: Node? = nil
-    local subrecord = record.subs[position + 1]
     if tag == 'LUAD' then
-      value = luaPayload(record.source, subrecord.payload, subrecord.size)
+      value = luaPayload(record.source, Records.span(record, position))
     elseif tag == 'LUAS' and #data == 4 then
       local id = Records.i32At(data)
       local path = if id >= 0 then indexes.luaScripts[id + 1] else nil
@@ -589,7 +588,7 @@ local function subrecordsValue(
     { 'subrecords', list(subrecords) },
   }
 
-  return value, if last < #record.subs - 1 then last + 1 else nil
+  return value, if last < record.count - 1 then last + 1 else nil
 end
 
 local function strings(items: { string }): List
@@ -663,7 +662,7 @@ local function reader(save: Save): (index: number, from: number?, limit: number?
       if plugin:code(index) ~= luamCode then continue end
 
       local record = Records.record(plugin, index)
-      for position = 0, #record.subs - 1 do
+      for position = 0, record.count - 1 do
         if Records.tagAt(record, position) ~= 'LUAP' then continue end
 
         local data = Records.payload(record, position)

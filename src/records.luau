@@ -7,30 +7,46 @@ A save's records as the save rules walk them: each record's tag and subrecords, 
 positions 0-based as every report counts them, and the field readers the rules share.
 ]]
 
+local bytes = require '@dream/bytes'
 local tes3 = require '@tes3'
 
 type Plugin = tes3.Plugin
-type Subrecord = tes3.Subrecord
 
+--- A record's header (its tag, size, and flags), and a subrecord's (its tag and size).
+local RecordHeader, SubrecordHeader = 16, 8
+
+--- How a record's subrecords are framed: each a tag, its payload's size, and the payload.
+local Framing = table.freeze { header = SubrecordHeader, lengthAt = 4 }
+
+--- A record, and where its subrecords are. They are kept as columns, a tag and a pair of offsets
+--- for each, and not as a table apiece: a cell's record holds tens of thousands, the rules walk
+--- a save's records several times over, and most of what they read is tags.
 export type Record = {
   index: number,
   tag: string,
   source: buffer,
-  subs: { Subrecord },
+  --- How many subrecords the record has.
+  count: number,
+  --- Each subrecord's tag, at its position + 1.
+  tags: { string },
+  --- Where each subrecord starts and ends in `source`, its header included: two u32s for each.
+  spans: buffer,
 }
 
 --- Record `index` (0-based) of `plugin`.
 local function record(plugin: Plugin, index: number): Record
+  local source, start, finish = plugin:span(index)
+  -- A plugin's records frame, or it wouldn't have opened.
+  local spans, count = bytes.frame(source, Framing, start + RecordHeader, finish)
   return {
     index = index,
     tag = plugin:tag(index),
-    source = (plugin:span(index)),
-    subs = plugin:subrecords(index),
+    source = source,
+    count = count,
+    tags = [for at in spans[1:count, 'u32@8'] => tes3.tags.name(buffer.readu32(source, at))],
+    spans = spans,
   }
 end
-
---- A record's header (its tag, size, and flags), and a subrecord's (its tag and size).
-local RecordHeader, SubrecordHeader = 16, 8
 
 --- How many subrecords record `index` has, counted where they are: nothing is listed.
 local function count(plugin: Plugin, index: number): number
@@ -49,30 +65,30 @@ local function all(plugin: Plugin): { Record }
   return [for index in range(0, plugin:count() - 1) => record(plugin, index)]
 end
 
---- Subrecord `position` (0-based) of `record`, or nil.
-local function sub(record: Record, position: number): Subrecord?
-  return record.subs[position + 1]
+--- The tag of subrecord `position` (0-based), or nil.
+local function tagAt(record: Record, position: number): string? return record.tags[position + 1] end
+
+--- Where subrecord `position` (0-based) starts in the record's `source`, and where it ends.
+local function bounds(record: Record, position: number): (number, number)
+  return buffer.readu32(record.spans, position * 8), buffer.readu32(record.spans, position * 8 + 4)
 end
 
---- The tag of subrecord `position` (0-based), or nil.
-local function tagAt(record: Record, position: number): string?
-  local subrecord = record.subs[position + 1]
-  return subrecord and subrecord.tag
+--- Where subrecord `position`'s payload is in the record's `source`, and its size.
+local function span(record: Record, position: number): (number, number)
+  local start, finish = bounds(record, position)
+  return start + SubrecordHeader, finish - start - SubrecordHeader
 end
 
 --- Subrecord `position`'s payload as a string.
 local function payload(record: Record, position: number): string
-  local subrecord = record.subs[position + 1]
-  return buffer.readstring(record.source, subrecord.payload, subrecord.size)
+  local at, size = span(record, position)
+  return buffer.readstring(record.source, at, size)
 end
 
 --- The first subrecord tagged `tag`, 0-based, or nil.
 local function first(record: Record, tag: string): number?
-  for index, subrecord in record.subs do
-    if subrecord.tag == tag then return index - 1 end
-  end
-
-  return nil
+  local ordinal = table.find(record.tags, tag)
+  return ordinal and ordinal - 1
 end
 
 --- The little-endian u32, i32, or f32 at byte `at` (1-based) of `data`.
@@ -167,6 +183,7 @@ end
 
 return table.freeze {
   all = all,
+  bounds = bounds,
   count = count,
   equalsIgnoringCase = equalsIgnoringCase,
   f32At = f32At,
@@ -180,7 +197,7 @@ return table.freeze {
   payload = payload,
   record = record,
   refId = refId,
-  sub = sub,
+  span = span,
   tagAt = tagAt,
   trimNul = trimNul,
   wideFormId = wideFormId,

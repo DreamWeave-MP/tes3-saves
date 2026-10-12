@@ -218,7 +218,7 @@ local function refIdFields(records: { Record }, protected: boolean?): { RefIdFie
     if not Records.isScannable(record.tag) then continue end
 
     local inventoryItemsRemaining = 0
-    for position = 0, #record.subs - 1 do
+    for position = 0, record.count - 1 do
       if tagAt(record, position) == 'ICNT' then
         inventoryItemsRemaining = Records.inventoryCount(payload(record, position))
         continue
@@ -250,7 +250,7 @@ export type Range = { start: number, finish: number }
 --- The CSTA object group subrecord `position` is in, `OBJE` up to the next `OBJE` or `MVRF`, and
 --- where its FRMR is; nil outside one.
 local function cstaReferenceGroup(record: Record, position: number): (Range?, number)
-  if record.tag ~= 'CSTA' or position >= #record.subs then return nil, 0 end
+  if record.tag ~= 'CSTA' or position >= record.count then return nil, 0 end
 
   local start: number? = nil
   for candidate = position, 0, -1 do
@@ -265,8 +265,8 @@ local function cstaReferenceGroup(record: Record, position: number): (Range?, nu
   local frmr = start + 1
   if tagAt(record, frmr) ~= 'FRMR' then return nil, 0 end
 
-  local finish = #record.subs
-  for candidate = frmr + 1, #record.subs - 1 do
+  local finish = record.count
+  for candidate = frmr + 1, record.count - 1 do
     local tag = tagAt(record, candidate)
     if tag == 'OBJE' or tag == 'MVRF' then
       finish = candidate
@@ -291,7 +291,7 @@ end
 --- The inventory item subrecord `position` is in: its FRMR up to the next item's (or the OBJE
 --- before it).
 local function inventoryItemGroup(record: Record, position: number): Range?
-  if position >= #record.subs then return nil end
+  if position >= record.count then return nil end
 
   local start: number? = nil
   for candidate = position, 0, -1 do
@@ -303,8 +303,8 @@ local function inventoryItemGroup(record: Record, position: number): Range?
 
   if not start then return nil end
 
-  local finish = #record.subs
-  for candidate = start + 1, #record.subs - 1 do
+  local finish = record.count
+  for candidate = start + 1, record.count - 1 do
     if tagAt(record, candidate) == 'FRMR' then
       finish = if candidate > 0 and tagAt(record, candidate - 1) == 'OBJE'
         then candidate - 1
@@ -329,7 +329,7 @@ end
 
 --- A stolen item in STLN: its NAME up to the next NAME.
 local function stolenItemGroup(record: Record, position: number): Range?
-  if record.tag ~= 'STLN' or position >= #record.subs then return nil end
+  if record.tag ~= 'STLN' or position >= record.count then return nil end
 
   local start: number? = nil
   for candidate = position, 0, -1 do
@@ -341,8 +341,8 @@ local function stolenItemGroup(record: Record, position: number): Range?
 
   if not start then return nil end
 
-  local finish = #record.subs
-  for candidate = start + 1, #record.subs - 1 do
+  local finish = record.count
+  for candidate = start + 1, record.count - 1 do
     if tagAt(record, candidate) == 'NAME' then
       finish = candidate
       break
@@ -366,8 +366,8 @@ local function aiPackage(record: Record, position: number): Range?
 
   if not start then return nil end
 
-  local finish = #record.subs
-  for candidate = start + 1, #record.subs - 1 do
+  local finish = record.count
+  for candidate = start + 1, record.count - 1 do
     local tag = tagAt(record, candidate)
     if tag == 'AIPK' or tag == 'LAST' then
       finish = candidate
@@ -552,7 +552,7 @@ local function contentFileHits(records: { Record }): { Hit }
   for _, record in records do
     if not Records.isScannable(record.tag) then continue end
 
-    for position = 0, #record.subs - 1 do
+    for position = 0, record.count - 1 do
       local meaning = formIdField(record, position)
       if meaning then
         local index, contentFile = Records.wideFormId(payload(record, position))
@@ -566,10 +566,9 @@ local function contentFileHits(records: { Record }): { Hit }
           })
         end
       elseif tagAt(record, position) == 'LUAD' then
-        local subrecord = record.subs[position + 1]
         -- decodeLuaData throws on a payload that isn't serialized Lua; such a payload holds no refs.
         local ok, value =
-          pcall(tes3.save.decodeLuaData, record.source, subrecord.payload, subrecord.size)
+          pcall(tes3.save.decodeLuaData, record.source, Records.span(record, position))
         if not ok then continue end
 
         for _, ref in tes3.save.luaRefs(value :: tes3.LuaValue) do
@@ -600,12 +599,12 @@ end
 
 --- Whether a record has a LUAD payload that doesn't decode or holds userdata jess can't read.
 local function hasUnparsedLuaData(record: Record): boolean
-  for _, subrecord in record.subs do
-    if subrecord.tag ~= 'LUAD' then continue end
+  for position = 0, record.count - 1 do
+    if tagAt(record, position) ~= 'LUAD' then continue end
 
     -- decodeLuaData throws on a payload that isn't serialized Lua; that's unparsed.
     local ok, value =
-      pcall(tes3.save.decodeLuaData, record.source, subrecord.payload, subrecord.size)
+      pcall(tes3.save.decodeLuaData, record.source, Records.span(record, position))
     if not ok or hasUnknownUserdata(value :: tes3.LuaValue) then return true end
   end
 
