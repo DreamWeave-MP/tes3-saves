@@ -1662,8 +1662,45 @@ local SubrecordDeletions: { [string]: boolean } = {
   delete_stale_state_field = true,
 }
 
+--- The subrecords `start` up to `finish` of a record, which an edit of `operation` deletes.
+type Deletion = { record: number, start: number, finish: number, operation: string }
+
+--- Record `index` without the subrecords of deletions `first` to `last` of a list. They are in
+--- order and apart, so the record is what lies between them, copied a piece at a time.
+local function without(
+  plugin: Plugin,
+  index: number,
+  deletions: { Deletion },
+  first: number,
+  last: number
+): buffer
+  local record = Records.record(plugin, index)
+  local source = record.source
+  local _, start = plugin:span(index)
+  local _, finish = Records.bounds(record, record.count - 1)
+  local removed = 0
+  for position = first, last do
+    local from = Records.bounds(record, deletions[position].start)
+    local _, to = Records.bounds(record, deletions[position].finish - 1)
+    removed += to - from
+  end
+
+  local out = buffer.create(finish - start - removed)
+  buffer.copy(out, 0, source, start, RecordHeader)
+  local at, copied = RecordHeader, start + RecordHeader
+  for position = first, last do
+    local from = Records.bounds(record, deletions[position].start)
+    local _, to = Records.bounds(record, deletions[position].finish - 1)
+    buffer.copy(out, at, source, copied, from - copied)
+    at += from - copied
+    copied = to
+  end
+
+  buffer.copy(out, at, source, copied, finish - copied)
+  return out
+end
+
 local function deleteSubrecords(plugin: Plugin, edits: { Edit })
-  type Deletion = { record: number, start: number, finish: number, operation: string }
   local deletions: { Deletion } = {}
   for _, edit in edits do
     if edit.status ~= 'planned' then continue end
@@ -1731,23 +1768,18 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
     previousRecord, previousFinish = deletion.record, deletion.finish
   end
 
-  local byRecord: { [number]: { number } } = {}
-  local records = {}
-  for _, deletion in deletions do
-    local list = byRecord[deletion.record]
-    if not list then
-      list = {}
-      byRecord[deletion.record] = list
-      table.insert(records, deletion.record)
+  -- Each record is rebuilt once, from its bytes: deleting subrecords by position has the record
+  -- list every one of them first, and a cell's record loses hundreds of groups.
+  local first = 1
+  while first <= #deletions do
+    local index = deletions[first].record
+    local last = first
+    while last < #deletions and deletions[last + 1].record == index do
+      last += 1
     end
 
-    for position = deletion.start, deletion.finish - 1 do
-      table.insert(list, position)
-    end
-  end
-
-  for _, record in records do
-    plugin:deleteSubrecords(record, byRecord[record])
+    plugin:replaceBytes(index, without(plugin, index, deletions, first, last))
+    first = last + 1
   end
 end
 
