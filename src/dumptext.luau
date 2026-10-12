@@ -46,15 +46,43 @@ end
 --- Scalar lists longer than this are block lists instead of inline.
 local MaxInlineWidth = 100
 
+--- How many spellings are kept at once, and the longest text one is kept for.
+local KeptSpellings, KeptLength = 4096, 64
+
+--- `spell` with its answers kept. A dump spells the same keys, tags, types, and ids for every
+--- record and subrecord it writes, and working one out costs far more than looking it up. What
+--- is kept is bounded: short texts only, and when there are `KeptSpellings` of them they are let
+--- go and kept afresh, since what a dump repeats changes as it moves through a save.
+local function remembering(spell: (text: string) -> string): (text: string) -> string
+  local kept: { [string]: string } = {}
+  local count = 0
+  return function(text: string): string
+    local known = kept[text]
+    if known then return known end
+
+    local spelled = spell(text)
+    if #text > KeptLength then return spelled end
+
+    if count == KeptSpellings then
+      table.clear(kept)
+      count = 0
+    end
+
+    count += 1
+    kept[text] = spelled
+    return spelled
+  end
+end
+
 --- A record field's name as jess's files spell it. `@tes3` names a typed record's fields
 --- camelCase from jess-omwaddon's snake_case ones, which are lowercase words and digits between
 --- underscores, so each capital is where an underscore was. That holds for field names and for
 --- nothing else: a code is never read back this way.
-local function fieldName(name: string): string
+local fieldName = remembering(function(name: string): string
   return (
     string.gsub(name, '%u', function(letter: string): string return '_' .. string.lower(letter) end)
   )
-end
+end)
 
 --[[ Numbers ]]
 
@@ -122,7 +150,7 @@ local function isPlainSafe(text: string): boolean
 end
 
 --- A string as a YAML scalar: plain when it can only be read as itself, quoted otherwise.
-local function quote(text: string): string
+local quote = remembering(function(text: string): string
   if isPlainSafe(text) then return text end
 
   -- YAML 1.1 readers take these for booleans and null, so they are quoted though 1.2 wouldn't.
@@ -137,7 +165,7 @@ local function quote(text: string): string
   end
 
   return quoted
-end
+end)
 
 --- Whether Rust reads `key` as a finite float: a mapping key that is a number (a Lua table's
 --- index) reads better unquoted.
@@ -152,7 +180,9 @@ local function isNumber(key: string): boolean
   return value ~= nil and value == value and math.abs(value) ~= math.huge
 end
 
-local function keyText(key: string): string return if isNumber(key) then key else quote(key) end
+local keyText = remembering(
+  function(key: string): string return if isNumber(key) then key else quote(key) end
+)
 
 --- The name the fields `node` have their value at `position` under, as a dump spells it: the
 --- save's own, or a field's name in snake_case.
@@ -340,7 +370,7 @@ local JsonEscapes: { [string]: string } = {
 }
 
 --- A string as serde_json writes one: `"`, `\`, and control characters escaped, DEL as it is.
-local function jsonString(text: string): string
+local jsonString = remembering(function(text: string): string
   if not string.find(text, '[%c"\\]') then return `"{text}"` end
 
   return '"'
@@ -351,7 +381,7 @@ local function jsonString(text: string): string
       return JsonEscapes[character] or string.format('\\u%04x', byte)
     end)
     .. '"'
-end
+end)
 
 local jsonValue: (out: { string }, node: Node) -> ()
 
