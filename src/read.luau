@@ -9,6 +9,7 @@ in the header itself (GMDT, SCRD, SCRS; `ESM::Header::load` in OpenMW's
 `components/esm3/loadtes3.cpp`). Errors read as jess-save's do.
 ]]
 
+local Records = require './records'
 local tes3 = require '@tes3'
 
 type Plugin = tes3.Plugin
@@ -35,8 +36,8 @@ export type Options = {
 local Articles: { [Game]: string } = { openmw = 'an OpenMW', morrowind = 'a Morrowind' }
 local Names: { [Game]: string } = { openmw = 'OpenMW', morrowind = 'Morrowind' }
 
-local SaveTag, Tes3Tag, GmdtTag =
-  tes3.tags.code 'SAVE', tes3.tags.code 'TES3', tes3.tags.code 'GMDT'
+local SaveTag, Tes3Tag, GmdtTag, LuadTag =
+  tes3.tags.code 'SAVE', tes3.tags.code 'TES3', tes3.tags.code 'GMDT', tes3.tags.code 'LUAD'
 
 --- What kind of save `plugin` is, or nil: an OpenMW save has a SAVE record, a Morrowind save a
 --- GMDT subrecord in its header.
@@ -289,16 +290,20 @@ local function luaData(save: Save): { LuaDataRow }
   local plugin = save.plugin
   local out = {}
   for index = 0, plugin:count() - 1 do
-    local source = plugin:span(index)
-    for _, sub in plugin:subrecords(index) do
-      if sub.tag ~= 'LUAD' then continue end
+    -- Most records hold no Lua data, and are passed over without their subrecords being listed.
+    if not plugin:findSubrecord(index, LuadTag) then continue end
+
+    local record = Records.record(plugin, index)
+    for position = 0, record.count - 1 do
+      if Records.tagAt(record, position) ~= 'LUAD' then continue end
 
       -- decodeLuaData throws on a payload that isn't serialized Lua; the row says why.
-      local ok, value = pcall(tes3.save.decodeLuaData, source, sub.payload, sub.size)
+      local ok, value =
+        pcall(tes3.save.decodeLuaData, record.source, Records.span(record, position))
       if ok then
-        table.insert(out, { record = index, type = plugin:tag(index), value = value })
+        table.insert(out, { record = index, type = record.tag, value = value })
       else
-        table.insert(out, { record = index, type = plugin:tag(index), error = tostring(value) })
+        table.insert(out, { record = index, type = record.tag, error = tostring(value) })
       end
     end
   end
