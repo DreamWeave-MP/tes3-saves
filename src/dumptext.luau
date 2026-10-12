@@ -287,18 +287,13 @@ inline = function(node: Node): string
   if node.kind == 'float' then return floatText(node.value) end
 
   if node.kind == 'list' then
-    local items = {}
-    for position, item in node.items do
-      items[position] = inline(item)
-    end
-
-    return `[{table.concat(items, ', ')}]`
+    return `[{table.concat([for item in node.items => inline(item)], ', ')}]`
   end
 
-  local entries = {}
-  for position, value in node.values do
-    entries[position] = `{keyText(keyAt(node, position))}: {inline(value)}`
-  end
+  local entries = [
+    for position, value in enumerate(node.values)
+    => `{keyText(keyAt(node, position))}: {inline(value)}`
+  ]
 
   return `\{{table.concat(entries, ', ')}}`
 end
@@ -317,12 +312,7 @@ local function isInlineSequence(items: { Node }): boolean
 
   if numbers then return true end
 
-  local width = 0
-  for _, item in items do
-    width += #inline(item) + 2
-  end
-
-  return width <= MaxInlineWidth
+  return sum[for item in items => #inline(item) + 2] <= MaxInlineWidth
 end
 
 --- Whether a character of `text` is a control character other than a line break or a tab.
