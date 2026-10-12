@@ -98,12 +98,7 @@ local function float(value: number): Node
 end
 
 local function floats(numbers: { number }, first: number, last: number): List
-  local items: { Node } = {}
-  for position = first, last do
-    table.insert(items, float(numbers[position]))
-  end
-
-  return list(items)
+  return list([for value in numbers[first:last] => float(value)])
 end
 
 --- The fields a typed value starts with, in order; the rest follow by name.
@@ -252,21 +247,8 @@ local function luaNode(value: LuaValue): Node
   if kind == 'table' then
     local entries = value.entries or {}
     local isList = #entries > 0
-    for position, entry in entries do
-      if listIndex(entry.key) ~= position then
-        isList = false
-        break
-      end
-    end
-
-    if isList then
-      local items: { Node } = table.create(#entries)
-      for position, entry in entries do
-        items[position] = luaNode(entry.value)
-      end
-
-      return list(items)
-    end
+      and all[for position, entry in enumerate(entries) => listIndex(entry.key) == position]
+    if isList then return list([for entry in entries => luaNode(entry.value)]) end
 
     local keys: { string }, nodes: { Node } = {}, {}
     local places: { [string]: number } = {}
@@ -297,11 +279,7 @@ local function luaNode(value: LuaValue): Node
   end
 
   if kind == 'objectList' then
-    local items: { Node } = {}
-    for _, ref in value.refs or {} do
-      table.insert(items, refnum(ref))
-    end
-
+    local items: { Node } = [for ref in value.refs or {} => refnum(ref)]
     return fields({ { 'objlist', list(items) } }, true)
   end
 
@@ -375,11 +353,7 @@ local function genericValue(data: string): Node
   if #data == 4 then return fourByteNumber(data) end
 
   if #data <= 16 then
-    local hex = {}
-    for index = 1, #data do
-      hex[index] = string.format('%02x', string.byte(data, index))
-    end
-
+    local hex = [for index in range(1, #data) => string.format('%02x', string.byte(data, index))]
     return `hex {table.concat(hex, ' ')}`
   end
 
@@ -390,11 +364,7 @@ end
 local function placement(data: string): Node?
   if #data ~= 24 then return nil end
 
-  local numbers = {}
-  for index = 0, 5 do
-    numbers[index + 1] = Records.f32At(data, 1 + index * 4)
-  end
-
+  local numbers = [for index in range(0, 5) => Records.f32At(data, 1 + index * 4)]
   return fields { { 'position', floats(numbers, 1, 3) }, { 'rotation', floats(numbers, 4, 6) } }
 end
 
@@ -405,11 +375,10 @@ local function equipment(data: string): Node?
   local count = Records.u32At(data)
   if #data - 4 ~= count * 8 then return nil end
 
-  local items: { Node } = {}
-  for index = 0, count - 1 do
-    local item, slot = Records.u32At(data, 5 + index * 8), Records.u32At(data, 9 + index * 8)
-    table.insert(items, `item {item} in slot {slot}`)
-  end
+  local items: { Node } = [
+    for index in range(0, count - 1)
+    => `item {Records.u32At(data, 5 + index * 8)} in slot {Records.u32At(data, 9 + index * 8)}`
+  ]
 
   return list(items)
 end
@@ -687,11 +656,7 @@ local function reader(save: Save): (index: number, from: number?, limit: number?
   if save.game == 'openmw' then
     -- masters throws on a header that doesn't read; then no content file has a name.
     local read, masters = pcall(plugin.masters, plugin)
-    if read then
-      for _, master in masters :: { tes3.Master } do
-        table.insert(indexes.contentFiles, master.name)
-      end
-    end
+    if read then indexes.contentFiles = [for master in masters :: { tes3.Master } => master.name] end
 
     local luamCode = tes3.tags.code 'LUAM'
     for index = 0, plugin:count() - 1 do
@@ -742,11 +707,7 @@ local function tree(save: Save, indices: { number }?): { Node }
     return out
   end
 
-  for index = 0, save.plugin:count() - 1 do
-    out[index + 1] = (read(index))
-  end
-
-  return out
+  return [for index in range(0, save.plugin:count() - 1) => (read(index))]
 end
 
 --- Every record's readable value, as `jess save dump` shows it.
