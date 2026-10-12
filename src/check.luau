@@ -233,7 +233,9 @@ local function defines(
   order: LoadOrder.LoadOrder,
   path: string,
   encoding: string,
-  ids: LoadOrder.Pool,
+  -- The pool's class by its own name: under another module's name for it, the call below is
+  -- not compiled to native code.
+  ids: dream_intern_Pool,
   known: { [number]: boolean }
 ): (string?, number)
   local plugin, problem, size = LoadOrder.openContent(order, path, encoding)

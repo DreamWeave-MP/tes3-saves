@@ -749,7 +749,9 @@ local function scanTarget(
   -- Every type and id once, ids compared exactly (interned straight from the file); the samples
   -- are the first few in type-then-id order, kept smallest first as the keys go by, and an id is
   -- only read as text when its key could be one.
-  local exact: LoadOrder.Pool = intern.new 'exact'
+  -- The pool's class by its own name: under another module's name for it, interning below is
+  -- not compiled to native code.
+  local exact: dream_intern_Pool = intern.new 'exact'
   local seen: { [number]: { [number]: boolean } } = {}
   local tags: { [number]: string } = {}
   local byType: { [string]: number } = {}
