@@ -966,6 +966,59 @@ suite.describe('render', function()
     }, '\n'))
   end)
 
+  suite.it('spells a float in the fewest digits that read back as it', function()
+    -- An f32 in an f32's digits: at the edges of its range, beside powers of two and of ten, a
+    -- tie between two spellings, and where plain notation gives way to scientific. Then doubles
+    -- that are no f32, in a double's digits.
+    local floats = {
+      single(0.1),
+      single(1 / 3),
+      16777216,
+      single(1234.5677),
+      single(0.001),
+      single(9.999999),
+      single(99999.99),
+      single(3.4028235e38),
+      single(1.17549435e-38),
+      single(1e-45),
+      single(0.3),
+      2 ^ -24,
+      single(1e10),
+      single(1e15),
+      single(1e16),
+      2.5,
+      2097152.25,
+      0.5,
+      single(5e-5),
+      single(0.0001),
+      single(123456.79),
+      4294967296,
+      8388607.5,
+      single(-271.82819),
+      single(6.2831855),
+      0.1,
+      1 / 3,
+      4254.171185921878,
+      1e-7,
+      1e22,
+    }
+
+    local result: commands.DumpResult = {
+      command = 'dump',
+      path = 'Save.omwsave',
+      mode = 'records',
+      records = { fields({ 'floats' }, { list([for value in floats => float(value)]) }) },
+    }
+
+    expect(cli.render(result)).toBe(
+      'records:\n- floats: [0.1, 0.33333334, 16777216.0, 1234.5677, 0.001, 9.999999, 99999.99, '
+        .. '3.4028235e38, 1.1754944e-38, 1.0e-45, 0.3, 5.9604645e-8, 10000000000.0, '
+        .. '1000000000000000.0, 1.0e16, 2.5, 2097152.2, 0.5, 5.0e-5, 1.0e-4, 123456.79, '
+        .. '4294967300.0, 8388607.5, -271.8282, 6.2831855, 0.1, 0.3333333333333333, '
+        .. '4254.171185921878, 1.0e-7, 1.0e22]\n'
+    )
+  end)
+
   suite.it('writes a listing, and no records at all', function()
     local result: commands.DumpResult = {
       command = 'dump',
