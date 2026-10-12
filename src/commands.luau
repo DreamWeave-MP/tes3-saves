@@ -189,8 +189,7 @@ export type StripResult = {
 local function writtenOf(value: unknown): Written?
   if type(value) ~= 'table' then return nil end
 
-  local fields = value :: { [string]: unknown }
-  local path, backup = fields.path, fields.backup
+  local {path, backup} = value :: { [string]: unknown }
   if type(path) ~= 'string' then return nil end
 
   return { path = path, backup = if type(backup) == 'string' then backup else nil }
@@ -397,8 +396,7 @@ local CellTag = tes3.tags.code 'CELL'
 local RecordHeader = 16
 
 local function dump(request: DumpRequest): DumpResult
-  local path = request.path
-  local limit, byteLimit = request.limit, request.byteLimit
+  local {path, limit, byteLimit} = request
   local inPages = (limit ~= nil or byteLimit ~= nil) and not request.rawOutput
   if (limit and limit < 1) or (byteLimit and byteLimit < 1) then
     error('a page of a dump holds at least one record', 0)
