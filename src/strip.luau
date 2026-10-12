@@ -32,8 +32,6 @@ type Counts = { [string]: number }
 --- has to work its way back from one spelling to the other.
 type Spell = (code: string) -> string
 
-local function asWritten(code: string): string return code end
-
 --- Each key of a count map, spelled.
 local function spellKeys(counts: Counts, spell: Spell): Counts
   local out: Counts = {}
@@ -1991,7 +1989,7 @@ local function strip(
   local mode: Mode = given.mode
     or (if given.output then 'output' elseif save.path then 'inPlace' else 'inMemory')
   local limit = given.sampleLimit or 5
-  local spell: Spell = if given.originalCodes then asWritten else tes3.text.camelCase
+  local spell = Check.spelling(given.originalCodes)
   local order = given.loadOrder
   local encoding = save.plugin.encoding
   local openOptions: tes3.OpenOptions = { encoding = encoding, profile = save.plugin.profile }

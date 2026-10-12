@@ -26,6 +26,25 @@ type Spell = (code: string) -> string
 
 local function asWritten(code: string): string return code end
 
+--- Each code's camelCase spelling, kept once it is made: a report spells the same few codes for
+--- every finding, edit, and reference it lists, and spelling one walks its characters.
+local Spelled: { [string]: string } = {}
+
+local function camelCase(code: string): string
+  local spelled = Spelled[code]
+  if not spelled then
+    spelled = tes3.text.camelCase(code)
+    Spelled[code] = spelled
+  end
+
+  return spelled
+end
+
+--- How a report spells its codes: as jess-save's sources do when asked, else camelCase.
+local function spelling(originalCodes: boolean?): Spell
+  return if originalCodes then asWritten else camelCase
+end
+
 --- Record types OpenMW writes as dynamic records (player-made spells, potions, the player).
 local DynamicTagList = {
   'ALCH',
@@ -416,7 +435,7 @@ export type CheckOptions = {
 local function check(save: Save, options: CheckOptions?): Check
   Read.requireOpenMw(save, 'check')
   local given: CheckOptions = options or {}
-  local spell: Spell = if given.originalCodes then asWritten else tes3.text.camelCase
+  local spell = spelling(given.originalCodes)
   local plugin = save.plugin
   -- profile throws on metadata that doesn't read; the error to report names the save.
   local ok, profile = pcall(tes3.save.profile, plugin)
@@ -536,5 +555,6 @@ return table.freeze {
   check = check,
   cstaMessages = cstaMessages,
   dynamicIds = dynamicIds,
+  spelling = spelling,
   validate = validate,
 }
