@@ -831,11 +831,12 @@ local function saveReferences(
   local samples = {}
   for _, field in fields do
     local record, position, meaning = field.record, field.subrecord, field.meaning
-    if Scan.inTargetCstaGroup(record, position, provenance.targetIndex) then continue end
-
     local token = tokenOf(provenance, field.id)
     local role = if token then provenance.roles[token] else nil
     if not token or not role then continue end
+
+    -- Asked second: few of a save's ids are the target's, and this walks the id's group.
+    if Scan.inTargetCstaGroup(record, position, provenance.targetIndex) then continue end
 
     if role == 'introduced_by_target' and Scan.canPlanDelete(record, position, meaning) then
       continue
