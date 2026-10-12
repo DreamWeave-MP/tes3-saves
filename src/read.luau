@@ -41,8 +41,8 @@ local SaveTag, Tes3Tag, GmdtTag =
 --- What kind of save `plugin` is, or nil: an OpenMW save has a SAVE record, a Morrowind save a
 --- GMDT subrecord in its header.
 local function detect(plugin: Plugin): Game?
-  for index = 0, plugin:count() - 1 do
-    if plugin:code(index) == SaveTag then return 'openmw' end
+  if any[for index in range(0, plugin:count() - 1) => plugin:code(index) == SaveTag] then
+    return 'openmw'
   end
 
   if plugin:count() > 0 and plugin:code(0) == Tes3Tag and plugin:findSubrecord(0, GmdtTag) then
@@ -184,10 +184,6 @@ local function morrowindInfo(plugin: Plugin): Info
   -- A decoded NPC_ always has its class and its NPDT, defaulted when the record carries neither.
   local class, data = player and player.class, player and player.data
   local level = if type(data) == 'table' then (data :: tes3.Value).level else nil
-  local dependencies = {}
-  for _, master in masters do
-    table.insert(dependencies, master.name)
-  end
 
   return {
     format = 'morrowind',
@@ -204,7 +200,7 @@ local function morrowindInfo(plugin: Plugin): Info
       month = globalInt 'Month',
       year = globalInt 'Year',
     },
-    dependencies = dependencies,
+    dependencies = [for master in masters => master.name],
     screenshotBytes = screenshotBytes,
     currentHealth = if gmdt then buffer.readf32(gmdt, at) else nil,
     maximumHealth = if gmdt then buffer.readf32(gmdt, at + 4) else nil,
