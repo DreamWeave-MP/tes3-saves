@@ -195,12 +195,41 @@ end
 
 local function unchanged(laid: disk.Installed): boolean return disk.read(laid.save) == laid.bytes end
 
+--- Fails unless `got` is `expected` byte for byte, naming where they part: the bytes themselves
+--- are no text a failure could show.
+local function expectBytes(got: string, expected: string)
+  if got == expected then return end
+
+  local at = 1
+  while at <= #got and at <= #expected and string.byte(got, at) == string.byte(expected, at) do
+    at += 1
+  end
+
+  error(`expected {#expected} bytes and got {#got}, which part at byte {at - 1}`, 0)
+end
+
+--- The bytes of the last record of a save on disk, which is tagged `tag`.
+local function lastRecord(path: string, tag: string): string
+  local plugin = saves.open(path).plugin
+  local last = plugin:count() - 1
+  expect(plugin:tag(last)).toBe(tag)
+  return buffer.tostring(plugin:bytes(last))
+end
+
 --- Load orders of content files that define nothing: one, two, and three of them.
 local Base = { ['Morrowind.esm'] = disk.scenario('plain').files['Morrowind.esm'] }
 local TwoFiles = disk.scenario('check-order').files
 local ThreeFiles = disk.scenario('lua-refnums').files
 local Two = { 'Morrowind.esm', 'Tribunal.esm' }
 local Three = { 'Morrowind.esm', 'Tribunal.esm', 'Bloodmoon.esm' }
+
+--- A load order whose Tribunal.esm defines an owner, a key, and a cell (`target_owner`,
+--- `target_key`, `target_cell`), as the `fixable` scenario's does.
+local Defining = disk.scenario('fixable').files
+
+--- The same Tribunal.esm, with a Bloodmoon.esm after it that defines nothing.
+local DefiningThree = table.clone(Defining)
+DefiningThree['Bloodmoon.esm'] = ThreeFiles['Bloodmoon.esm']
 
 suite.describe('plans', function()
   suite.it('reports the dependency plan', function()
@@ -982,6 +1011,147 @@ suite.describe('save state', function()
     expect(words 'EQIP').toEqual { 2, 0, 1, 1, 5 }
     expect(words 'SELE').toEqual { 1 }
   end)
+
+  suite.it('renumbers each inventory of a record that loses items', function()
+    local function words(values: { number }): string
+      return table.concat([for value in values => plugins.u32(value)])
+    end
+
+    local function holder(index: number, base: string): string
+      return subrecord('OBJE', plugins.u32(0))
+        .. subrecord('FRMR', formId(index, 0))
+        .. subrecord('NAME', refId(base))
+    end
+
+    local function item(index: number, id: string): string
+      return subrecord('FRMR', formId(index, -1)) .. subrecord('NAME', refId(id))
+    end
+
+    local cell = subrecord('NAME', refId 'base_cell')
+    -- A chest that loses the second of three items, then a guard who loses the first of two.
+    local state = record(
+      'CSTA',
+      table.concat {
+        cell,
+        holder(1, 'base_chest'),
+        subrecord('ICNT', plugins.u32(3)),
+        item(1, 'iron_helmet'),
+        item(2, 'target_key'),
+        item(3, 'steel_boots'),
+        subrecord('EQIP', words { 2, 0, 1, 2, 5 }),
+        holder(2, 'base_guard'),
+        subrecord('ICNT', plugins.u32(2)),
+        item(4, 'target_key'),
+        item(5, 'iron_sword'),
+        subrecord('EQIP', words { 1, 1, 16 }),
+        subrecord('SELE', words { 1 }),
+      }
+    )
+
+    local laid = disk.lay('strip-inventories', fixtures.save(Two) .. state, Defining)
+    local output = jess.fs.join(laid.root, 'inventories-out')
+    local step = stripOk(laid, { '--output', output }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      planned_operations = {
+        { status = 'planned', name = 'delete_inventory_items_for_removed_dependency', count = 2 },
+      },
+      dry_run = { status = 'verified' },
+    })
+
+    -- Each inventory counts what it has left, and what is equipped or selected of it moves down
+    -- past the item that went; every other byte of the record is as it was.
+    local after = record(
+      'CSTA',
+      table.concat {
+        cell,
+        holder(1, 'base_chest'),
+        subrecord('ICNT', plugins.u32(2)),
+        item(1, 'iron_helmet'),
+        item(3, 'steel_boots'),
+        subrecord('EQIP', words { 2, 0, 1, 1, 5 }),
+        holder(2, 'base_guard'),
+        subrecord('ICNT', plugins.u32(1)),
+        item(5, 'iron_sword'),
+        subrecord('EQIP', words { 1, 0, 16 }),
+        subrecord('SELE', words { 0 }),
+      }
+    )
+
+    expectBytes(lastRecord(output, 'CSTA'), after)
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('leaves what lies in an object it deletes to the deletion', function()
+    local function object(index: number, base: string, last: string): string
+      return subrecord('OBJE', plugins.u32(0))
+        .. subrecord('FRMR', formId(index, 0))
+        .. subrecord('NAME', refId(base))
+        .. last
+    end
+
+    local cell = subrecord('NAME', refId 'base_cell')
+    -- Two objects that are the removed content's, each ending in a field a strip has a rule of
+    -- its own for: an owner it would clear, and a reference it would renumber. Then one that
+    -- stays, whose reference is renumbered.
+    local state = record(
+      'CSTA',
+      table.concat {
+        cell,
+        object(1, 'target_key', subrecord('ANAM', refId 'target_owner')),
+        object(2, 'target_key', subrecord('TAID', formId(9, 2))),
+        object(3, 'base_chest', subrecord('TAID', formId(10, 2))),
+      }
+    )
+
+    local laid = disk.lay('strip-object-fields', fixtures.save(Three) .. state, DefiningThree)
+    local output = jess.fs.join(laid.root, 'object-fields-out')
+    local step = stripOk(laid, { '--output', output }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      planned_operations = {
+        {
+          status = 'planned',
+          name = 'delete_csta_reference_groups_for_removed_dependency',
+          count = 2,
+        },
+      },
+      dry_run = { status = 'verified' },
+    })
+
+    -- The save's dependency, the two objects, and the one reference left to renumber.
+    expect(#step.planned_edits).toBe(4)
+    expect(mentions(step.planned_edits, 'clear_cell_ref_field')).toBe(false)
+    expectBytes(
+      lastRecord(output, 'CSTA'),
+      record('CSTA', cell .. object(3, 'base_chest', subrecord('TAID', formId(10, 1))))
+    )
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('deletes an object the removed content placed, whatever of its own it points at', function()
+    -- A door into one of the removed content's cells has no fix (`blocks on state that has no
+    -- safe fix`), and needs none when the removed content placed the door: the object goes whole.
+    local state = record(
+      'CSTA',
+      table.concat {
+        subrecord('NAME', refId 'base_cell'),
+        subrecord('OBJE', plugins.u32(0)),
+        subrecord('FRMR', formId(7, 1)),
+        subrecord('NAME', refId 'base_door'),
+        subrecord('DNAM', 'target_cell'),
+      }
+    )
+
+    local laid = disk.lay('strip-placed-door', fixtures.save(Two) .. state, Defining)
+    local output = jess.fs.join(laid.root, 'placed-door-out')
+    local step = stripOk(laid, { '--output', output }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      save_references = { total = 0 },
+      blockers = { status = 'no_known_blockers' },
+      mutation = 'written',
+    })
+    expect(tagsOf(output, 'CSTA')).toEqual { 'NAME' }
+    expect(unchanged(laid)).toBe(true)
+  end)
 end)
 
 suite.describe('references by content file', function()
@@ -1143,6 +1313,88 @@ suite.describe('references by content file', function()
       { index = 7, contentFile = 0 },
       { index = 8, contentFile = 1 },
       { index = 9, contentFile = 1 },
+    }
+    expect(unchanged(laid)).toBe(true)
+  end)
+
+  suite.it('renumbers every reference of a record, and Lua data that refers to two content files', function()
+    -- A cell's objects, pointing at the two content files after Tribunal.esm: as the save has
+    -- them, and as they are once those have each `moved` down one.
+    local function cell(moved: number): string
+      return record(
+        'CSTA',
+        table.concat {
+          subrecord('NAME', refId 'base_cell'),
+          subrecord('OBJE', plugins.u32(0)),
+          subrecord('FRMR', formId(1, 2 - moved)),
+          subrecord('NAME', refId 'base_one'),
+          subrecord('DATA', string.rep('\1', 24)),
+          subrecord('OBJE', plugins.u32(0)),
+          subrecord('FRMR', formId(2, 0)),
+          subrecord('NAME', refId 'base_two'),
+          subrecord('OBJE', plugins.u32(0)),
+          subrecord('FRMR', formId(3, 3 - moved)),
+          subrecord('NAME', refId 'base_three'),
+          subrecord('MVRF', formId(4, 2 - moved)),
+          subrecord('NAME', refId 'base_cell'),
+        }
+      )
+    end
+
+    -- A script's reference and two payloads of its data, one of which refers to both files.
+    local scripts = record(
+      'LUAM',
+      table.concat {
+        subrecord('FRMR', formId(5, 3)),
+        subrecord('LUAD', fixtures.luaObjectList { { 7, 0 }, { 8, 2 }, { 9, 3 } }),
+        subrecord('LUAD', fixtures.luaObject(10, 3)),
+      }
+    )
+
+    local four = { 'Morrowind.esm', 'Tribunal.esm', 'Bloodmoon.esm', 'Mod.esp' }
+    local files = table.clone(ThreeFiles)
+    files['Mod.esp'] = ThreeFiles['Bloodmoon.esm']
+    local laid = disk.lay('strip-remap-record', fixtures.save(four) .. cell(0) .. scripts, files)
+    local output = jess.fs.join(laid.root, 'remap-record-output.omwsave')
+    local step = stripOk(laid, { '--output', output }, { 'Tribunal.esm' }).steps[1]
+    expectMatches(step, {
+      planned_operations = {
+        {
+          status = 'planned',
+          name = 'remap_lua_serialized_refnums_after_removed_dependency',
+          count = 3,
+        },
+      },
+      dry_run = { post_mutation_verification = { status = 'verified' } },
+    })
+
+    -- Four FormIds and three references in Lua data, after the save's own dependency.
+    expect(#step.planned_edits).toBe(8)
+    local plugin = saves.open(output).plugin
+    local luam = plugin:count() - 1
+    expect(plugin:tag(luam - 1)).toBe 'CSTA'
+    -- The cell's record is byte for byte what it would be had the save been written without
+    -- Tribunal.esm.
+    expectBytes(buffer.tostring(plugin:bytes(luam - 1)), cell(1))
+    expect(plugin:tag(luam)).toBe 'LUAM'
+    local source = plugin:span(luam)
+    local held: { unknown } = {}
+    for _, sub in plugin:subrecords(luam) do
+      if sub.tag == 'LUAD' then
+        table.insert(held, tes3.save.luaRefs(tes3.save.decodeLuaData(source, sub.payload, sub.size)))
+      else
+        table.insert(held, { buffer.readu32(source, sub.payload), buffer.readi32(source, sub.payload + 4) })
+      end
+    end
+
+    expect(held).toEqual {
+      { 5, 2 },
+      {
+        { index = 7, contentFile = 0 },
+        { index = 8, contentFile = 1 },
+        { index = 9, contentFile = 2 },
+      },
+      { { index = 10, contentFile = 2 } },
     }
     expect(unchanged(laid)).toBe(true)
   end)
