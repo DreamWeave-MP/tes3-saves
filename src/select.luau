@@ -191,15 +191,7 @@ local function matchesRecord(selector: Selector, plugin: Plugin, index: number):
 
   if #selector.flags > 0 then
     local bits = plugin:flags(index)
-    local any = false
-    for _, flag in selector.flags do
-      if bit32.btest(bits, flag) then
-        any = true
-        break
-      end
-    end
-
-    if not any then return false end
+    if not any[for flag in selector.flags => bit32.btest(bits, flag)] then return false end
   end
 
   if #selector.ids > 0 or #selector.exactIds > 0 then
@@ -207,9 +199,7 @@ local function matchesRecord(selector: Selector, plugin: Plugin, index: number):
     if #selector.ids > 0 then
       if not id then return false end
 
-      for _, regex in selector.ids do
-        if not regex:isMatch(id) then return false end
-      end
+      if not all[for regex in selector.ids => regex:isMatch(id)] then return false end
     end
 
     if #selector.exactIds > 0 then
@@ -230,13 +220,9 @@ local function matchesRecord(selector: Selector, plugin: Plugin, index: number):
 
   if #selector.matches > 0 or #selector.noMatches > 0 then
     local raw = buffer.tostring(plugin:bytes(index))
-    for _, regex in selector.matches do
-      if not regex:isMatch(raw) then return false end
-    end
+    if not all[for regex in selector.matches => regex:isMatch(raw)] then return false end
 
-    for _, regex in selector.noMatches do
-      if regex:isMatch(raw) then return false end
-    end
+    if any[for regex in selector.noMatches => regex:isMatch(raw)] then return false end
   end
 
   if selector.interior and not tes3.records.cellIsInterior(plugin, index) then return false end
@@ -256,7 +242,7 @@ local function matchesSubrecord(
   if not hasSubrecordFilters(selector) then return true end
 
   local text = tes3.records.subrecordText(plugin, index, sub)
-  local subMatch, subNoMatch = selector.subMatch, selector.subNoMatch
+  local {subMatch, subNoMatch} = selector
   if subMatch and not subMatch:isMatch(text) then return false end
 
   return not (subNoMatch and subNoMatch:isMatch(text))
@@ -270,12 +256,11 @@ local function matchingCellReferences(selector: Selector, plugin: Plugin, index:
   local subs = plugin:subrecords(index)
   local out = {}
   for referenceOrdinal, group in groups.references do
-    local lines = {}
-    for ordinal = group[1] + 1, group[2] + 1 do
-      table.insert(lines, tes3.records.subrecordText(plugin, index, subs[ordinal]) .. '\n')
-    end
+    local text = table.concat([
+      for ordinal in range(group[1] + 1, group[2] + 1)
+      => tes3.records.subrecordText(plugin, index, subs[ordinal]) .. '\n'
+    ])
 
-    local text = table.concat(lines)
     local match, noMatch = selector.instanceMatch, selector.instanceNoMatch
     if (not match or match:isMatch(text)) and not (noMatch and noMatch:isMatch(text)) then
       table.insert(out, referenceOrdinal - 1)
@@ -301,11 +286,9 @@ local function selection(selector: Selector, plugin: Plugin, index: number): Sel
   end
 
   if hasSubrecordFilters(selector) then
-    for _, sub in plugin:subrecords(index) do
-      if matchesSubrecord(selector, plugin, index, sub) then return { whole = true } end
-    end
-
-    return nil
+    local matches =
+      any[for sub in plugin:subrecords(index) => matchesSubrecord(selector, plugin, index, sub)]
+    return if matches then { whole = true } else nil
   end
 
   return { whole = true }
