@@ -114,12 +114,7 @@ end
 
 --- The CSTA layout problems' messages.
 local function cstaMessages(plugin: Plugin): { string }
-  local out = {}
-  for _, diagnostic in cstaProblems(plugin) do
-    table.insert(out, diagnostic.message)
-  end
-
-  return out
+  return [for diagnostic in cstaProblems(plugin) => diagnostic.message]
 end
 
 --- Why OpenMW wouldn't load a save of this format version, or nil when it would.
@@ -152,10 +147,10 @@ local ValidateChecks = { 'structure', 'save_metadata', 'save_format', 'cell_stat
 --- SAVE header, a format version OpenMW loads, and cell state laid out the way the engine reads it.
 --- `checks` names them camelCase, or with `originalCodes` as jess-save does.
 local function validate(plugin: Plugin, originalCodes: boolean?): Validation
-  local checks = {}
-  for position, name in ValidateChecks do
-    checks[position] = if originalCodes then name else tes3.text.camelCase(name)
-  end
+  local checks = [
+    for name in ValidateChecks
+    => if originalCodes then name else tes3.text.camelCase(name)
+  ]
 
   local diagnostics = plugin:validateProfile 'omwsave'
   -- profile throws on metadata that doesn't read; that's the finding.
@@ -190,10 +185,10 @@ local function validate(plugin: Plugin, originalCodes: boolean?): Validation
 end
 
 local function structureProblems(plugin: Plugin): { string }
-  local problems = {}
-  for _, diagnostic in plugin:validateProfile(plugin.profile) do
-    table.insert(problems, `offset {diagnostic.offset}: {diagnostic.message}`)
-  end
+  local problems = [
+    for {offset, message} in plugin:validateProfile(plugin.profile)
+    => `offset {offset}: {message}`
+  ]
 
   -- compatibility throws when the format version doesn't read.
   local ok, compatibility = pcall(tes3.save.compatibility, plugin)
@@ -396,11 +391,7 @@ local function sameRelativeOrder(dependencies: { string }, active: { LoadOrder.C
 
   if #activeOrder ~= #saveOrder then return false end
 
-  for index, name in activeOrder do
-    if saveOrder[index] ~= name then return false end
-  end
-
-  return true
+  return all[for index, name in enumerate(activeOrder) => saveOrder[index] == name]
 end
 
 export type MissingContent = { name: string, strippable: boolean }
@@ -476,19 +467,12 @@ local function check(save: Save, options: CheckOptions?): Check
       if active[string.lower(dependency)] then continue end
 
       -- Strip tells an uninstalled file's records apart by what the rest defines.
-      local othersInstalled = true
-      for _, other in metadata.dependencies do
-        if
-          string.lower(other) == string.lower(dependency) or not Records.isRecordContentFile(other)
-        then
-          continue
-        end
-
-        if not resolve(other) then
-          othersInstalled = false
-          break
-        end
-      end
+      local othersInstalled = all[
+        for other in metadata.dependencies
+        if string.lower(other) ~= string.lower(dependency)
+        if Records.isRecordContentFile(other)
+        => resolve(other)
+      ]
 
       table.insert(
         missing,
@@ -517,11 +501,7 @@ local function check(save: Save, options: CheckOptions?): Check
 
   local function has(severity: string): boolean
     local spelled = spell(severity)
-    for _, finding in findings do
-      if finding.severity == spelled then return true end
-    end
-
-    return false
+    return any[for finding in findings => finding.severity == spelled]
   end
 
   local verdict = if #problems > 0
