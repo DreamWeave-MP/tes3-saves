@@ -101,17 +101,15 @@ local function layout(
   if not options or not options.subrecords then return out, nil end
 
   local fields = if options.fields then fieldsBySubrecord(plugin, index) else {}
-  local list = {}
   local subs = plugin:subrecords(index)
   -- With a limit, the subrecords from position `from` up to that many, and where the rest start.
   local first = (options.from or 0) + 1
   local last = if options.limit then math.min(#subs, first + options.limit - 1) else #subs
-  for ordinal = first, last do
-    local sub = subs[ordinal]
-    if not Select.matchesSubrecord(selector, plugin, index, sub) then continue end
-
-    table.insert(list, subrecordLayout(plugin, index, ordinal - 1, sub, fields[ordinal - 1]))
-  end
+  local list = [
+    for ordinal in range(first, last)
+    if Select.matchesSubrecord(selector, plugin, index, subs[ordinal])
+    => subrecordLayout(plugin, index, ordinal - 1, subs[ordinal], fields[ordinal - 1])
+  ]
 
   if #list > 0 then out.subrecords = list end
 
@@ -135,10 +133,10 @@ local function references(
   local out = {}
   for _, reference in Select.matchingCellReferences(selector, plugin, index) do
     local group = groups.references[reference + 1]
-    local list = {}
-    for position = group[1], group[2] do
-      table.insert(list, subrecordLayout(plugin, index, position, subs[position + 1], named[position]))
-    end
+    local list = [
+      for position in range(group[1], group[2])
+      => subrecordLayout(plugin, index, position, subs[position + 1], named[position])
+    ]
 
     table.insert(out, { index = reference, subrecords = list })
   end
@@ -184,11 +182,7 @@ local function extractMatching(plugin: Plugin, selector: Selector, includeHeader
         kept[ref] = true
       end
 
-      local dropped = {}
-      for ref = 0, count - 1 do
-        if not kept[ref] then table.insert(dropped, ref) end
-      end
-
+      local dropped = [for ref in range(0, count - 1) if not kept[ref] => ref]
       if #dropped > 0 then table.insert(trims, { position = position, dropped = dropped }) end
     end
 
