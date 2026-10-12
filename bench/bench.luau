@@ -1,0 +1,890 @@
+--!strict
+--!native
+-- Save tooling, timed through `@tes3-saves`, `@tes3-saves/commands`, and `@tes3-saves/cli`:
+-- opening a save and reading what it says of itself, checking it against a load order, stripping
+-- a content file from it, and dumping it as values, as text, and as byte layouts. The save and
+-- its four content files are synthetic and seeded: cell states of a hundred objects and two of
+-- eight hundred, with owners, locks, inventories, AI packages, and Lua data; the player, dynamic
+-- records, journal entries, and the state records a strip has rules for. One line per workload,
+-- `name<TAB>seconds per call`, the median of seven batches. A dump is asked for in pages as the
+-- command line asks, without the collection it runs between them. Run on a release build:
+--   jess run --package . --package-path .. --capability filesystem.read \
+--     --capability filesystem.write bench/bench.luau <scratch folder> [filter]
+local bytes = require '@dream/bytes'
+local cli = require '@tes3-saves/cli'
+local commands = require '@tes3-saves/commands'
+local fs = require '@dream/fs'
+local saves = require '@tes3-saves'
+local tes3 = require '@tes3'
+
+-- A build without the verified toolchain runs Luau slower than a release does, so a number from
+-- one says nothing about what ships.
+if not jess.bench.verified then
+  error(
+    'tes3-saves bench: this jess was built without the verified toolchain: measure on a release build',
+    0
+  )
+end
+
+--- The arguments: a folder to write the save into, and a filter on the workload names.
+local scratch: string?, filter: string? = ...
+local only = if filter and filter ~= '' then filter else nil
+
+if not scratch then error('tes3-saves bench: give a scratch folder to write the save into', 0) end
+
+local function median(samples: { number }): number
+  table.sort(samples)
+  return samples[(#samples + 1) // 2]
+end
+
+--- Seconds per call of `body`: warmed up, then the median of seven batches of a size that takes
+--- about a tenth of a second, a full collection between batches.
+local function measure<Result>(body: () -> Result): number
+  jess.bench.collect()
+  body()
+  local start = os.clock()
+  body()
+  local once = math.max(os.clock() - start, 1e-7)
+  local iterations = math.max(1, math.floor(0.1 / once))
+  local samples = table.create(7, 0)
+
+  for batch = 1, 7 do
+    jess.bench.collect()
+    start = os.clock()
+
+    for _ = 1, iterations do
+      body()
+    end
+
+    samples[batch] = (os.clock() - start) / iterations
+  end
+
+  return median(samples)
+end
+
+--- Times `body`. `digest` makes a number of what a call returned, outside the time, before the
+--- batches and after them: `expected`, or the workload is broken and its time means nothing.
+local function workload<Result>(
+  name: string,
+  expected: number,
+  body: () -> Result,
+  digest: (result: Result) -> number
+)
+  if only and not string.find(name, only, 1, true) then return end
+
+  local function verify()
+    local got = digest(body())
+    if got ~= expected then
+      error(`tes3-saves bench: '{name}' answered {got}, not {expected}`, 0)
+    end
+  end
+
+  verify()
+  local seconds = measure(body)
+  verify()
+  print(`{name}\t{string.format('%.9f', seconds)}`)
+end
+
+local random = 0x2545f491
+
+local function nextRandom(): number
+  random = bit32.bxor(random, bit32.lshift(random, 13))
+  random = bit32.bxor(random, bit32.rshift(random, 17))
+  random = bit32.bxor(random, bit32.lshift(random, 5))
+  return random
+end
+
+local function chance(percent: number): boolean return nextRandom() % 100 < percent end
+
+--- One of `count` ids that start with `prefix`.
+local function pick(prefix: string, count: number): string
+  return `{prefix}_{nextRandom() % count + 1}`
+end
+
+local function u32(value: number): string return string.pack('<I4', value) end
+
+local function i32(value: number): string return string.pack('<i4', value) end
+
+local function f32(value: number): string return string.pack('<f', value) end
+
+local function subrecord(tag: string, payload: string): string
+  return tag .. u32(#payload) .. payload
+end
+
+local function record(tag: string, payload: string): string
+  return tag .. u32(#payload) .. u32(0) .. u32(0) .. payload
+end
+
+local function fixed(text: string, length: number): string
+  return text .. string.rep('\0', length - #text)
+end
+
+local function sized(text: string): string return u32(#text) .. text end
+
+--- A string RefId as a save writes one.
+local function refId(id: string): string return '\2' .. id end
+
+local function formId(index: number, contentFile: number): string
+  return u32(index) .. i32(contentFile)
+end
+
+--[[ The content files ]]
+
+local function named(tag: string, id: string): string
+  return record(tag, subrecord('NAME', id .. '\0') .. subrecord('MODL', `meshes\\{id}.nif\0`))
+end
+
+--- Adds records `prefix_first` to `prefix_last` of type `tag`.
+local function series(records: { string }, tag: string, prefix: string, first: number, last: number)
+  for index = first, last do
+    table.insert(records, named(tag, `{prefix}_{index}`))
+  end
+end
+
+local function contentFile(masters: { string }, records: { string }): buffer
+  local header = {
+    subrecord(
+      'HEDR',
+      f32(1.3) .. u32(0) .. fixed('bench', 32) .. fixed('synthetic', 256) .. u32(#records)
+    ),
+  }
+
+  for _, master in masters do
+    table.insert(header, subrecord('MAST', master .. '\0'))
+    table.insert(header, subrecord('DATA', string.pack('<I8', 1)))
+  end
+
+  return buffer.fromstring(record('TES3', table.concat(header)) .. table.concat(records))
+end
+
+--- The game's master: everything the save's untouched state refers to.
+local function morrowind(): buffer
+  local records = {
+    named('BSGN', 'base_sign'),
+    named('RACE', 'base_race'),
+    named('CLAS', 'base_class'),
+    named('BODY', 'base_head'),
+    named('BODY', 'base_hair'),
+  }
+
+  series(records, 'STAT', 'base_static', 1, 3000)
+  series(records, 'MISC', 'base_misc', 1, 1200)
+  series(records, 'NPC_', 'base_npc', 1, 400)
+  series(records, 'CONT', 'base_chest', 1, 300)
+  series(records, 'CELL', 'base_cell', 1, 200)
+  series(records, 'SPEL', 'base_spell', 1, 200)
+  series(records, 'FACT', 'base_faction', 1, 20)
+  series(records, 'GLOB', 'base_global', 1, 60)
+  return contentFile({}, records)
+end
+
+--- The content file the strips remove: records of its own, records of the master's under another
+--- capitalization, and ids it defines twice, as two types and in two spellings.
+local function tribunal(): buffer
+  local records = {}
+  series(records, 'STAT', 'Base_Static', 1, 300)
+  series(records, 'MISC', 'base_misc', 1, 100)
+  series(records, 'STAT', 'target_static', 1, 500)
+  series(records, 'MISC', 'target_misc', 1, 300)
+  series(records, 'NPC_', 'target_npc', 1, 100)
+  series(records, 'CELL', 'target_cell', 1, 20)
+  series(records, 'SPEL', 'target_spell', 1, 60)
+  series(records, 'FACT', 'target_faction', 1, 5)
+  series(records, 'GLOB', 'target_global', 1, 10)
+  series(records, 'MISC', 'target_dual', 1, 20)
+  series(records, 'WEAP', 'target_dual', 1, 20)
+  series(records, 'MISC', 'Target_Twice', 1, 10)
+  series(records, 'MISC', 'target_twice', 1, 10)
+  return contentFile({ 'Morrowind.esm' }, records)
+end
+
+local function bloodmoon(): buffer
+  local records = {}
+  series(records, 'STAT', 'blood_static', 1, 600)
+  series(records, 'MISC', 'blood_misc', 1, 200)
+  series(records, 'NPC_', 'blood_npc', 1, 100)
+  series(records, 'MISC', 'base_misc', 50, 150)
+  return contentFile({ 'Morrowind.esm' }, records)
+end
+
+local function mod(): buffer
+  local records = {}
+  series(records, 'MISC', 'mod_misc', 1, 150)
+  series(records, 'STAT', 'mod_static', 1, 150)
+  series(records, 'STAT', 'base_static', 250, 350)
+  return contentFile({ 'Morrowind.esm' }, records)
+end
+
+local Dependencies = { 'Morrowind.esm', 'Tribunal.esm', 'Bloodmoon.esm', 'Mod.esp' }
+
+local Files: { [string]: buffer } = {
+  ['Morrowind.esm'] = morrowind(),
+  ['Tribunal.esm'] = tribunal(),
+  ['Bloodmoon.esm'] = bloodmoon(),
+  ['Mod.esp'] = mod(),
+}
+
+--- A load order of the content files `names`, read from memory.
+local function loadOrder(names: { string }): saves.LoadOrder
+  local available: { [string]: buffer } = {}
+  for _, name in names do
+    available[string.lower(name)] = Files[name]
+  end
+
+  return {
+    content = [for name in names => { name = name, path = name }],
+    resolve = function(name: string): string?
+      return if available[string.lower(name)] then name else nil
+    end,
+    read = function(path: string): buffer? return available[string.lower(path)] end,
+  }
+end
+
+--[[ The save ]]
+
+--- The content files a reference that isn't a cell's own points at: the master, Bloodmoon.esm, or
+--- none. A strip refuses to remove a content file such a reference points at, so Tribunal.esm
+--- and Mod.esp can be stripped, and a strip of Bloodmoon.esm is planned and blocked.
+local Others = { 0, 0, 0, 2, 2, 2, -1 }
+
+local function otherFile(): number return Others[nextRandom() % #Others + 1] end
+
+--- The content file an object of a cell is placed by: mostly the master, some by each of the
+--- others, and a few generated.
+local function placingFile(): number
+  local roll = nextRandom() % 100
+  if roll < 60 then return 0 end
+
+  if roll < 75 then return 1 end
+
+  if roll < 90 then return 2 end
+
+  if roll < 95 then return 3 end
+
+  return -1
+end
+
+local serial = 0
+
+local function nextSerial(): number
+  serial += 1
+  return serial
+end
+
+local function luaText(value: string): tes3.LuaValue return { kind = 'string', value = value } end
+
+local function luaNumber(value: number): tes3.LuaValue return { kind = 'number', value = value } end
+
+local CountNames = { 'visits', 'kills', 'thefts', 'greetings', 'bribes', 'trades' }
+
+--- A script's saved state: scalars, an object and a list of them, a vector, a list, and a table
+--- under text keys. Its references are all to one content file.
+local function luaPayload(): string
+  local file = otherFile()
+  local first = nextSerial()
+  local history = [
+    for index in range(1, 8)
+    => { key = luaNumber(index), value = luaNumber(nextRandom() % 4096 / 8) }
+  ]
+
+  local counts = [
+    for name in CountNames
+    => { key = luaText(name), value = luaNumber(nextRandom() % 50) }
+  ]
+
+  local seen = [for index in range(1, 3) => { index = first + index, contentFile = file }]
+  serial += 3
+  return tes3.save.encodeLuaData {
+    kind = 'table',
+    entries = {
+      { key = luaText 'enabled', value = { kind = 'boolean', value = first % 2 == 0 } },
+      { key = luaText 'timer', value = luaNumber(nextRandom() % 100000 / 7) },
+      { key = luaText 'owner', value = luaText(pick('base_npc', 400)) },
+      {
+        key = luaText 'target',
+        value = { kind = 'object', ref = { index = first, contentFile = file } },
+      },
+      { key = luaText 'seen', value = { kind = 'objectList', refs = seen } },
+      { key = luaText 'position', value = { kind = 'vec3', values = { 1.5, first, -2.25 } } },
+      { key = luaText 'history', value = { kind = 'table', entries = history } },
+      { key = luaText 'counts', value = { kind = 'table', entries = counts } },
+    },
+  }
+end
+
+--- Three coordinates no f32 spells shortly, and three angles.
+local function placement(): string
+  return table.concat([
+    for index in range(1, 6)
+    => f32(
+      if index <= 3 then nextRandom() % 2000000 / 173 - 5000 else nextRandom() % 6283 / 1000
+    )
+  ])
+end
+
+--- An inventory of `count` items, `percent` in a hundred the removed content file's.
+local function inventory(parts: { string }, count: number, percent: number)
+  table.insert(parts, subrecord('ICNT', u32(count)))
+  for _ = 1, count do
+    local item = if chance(percent) then pick('target_misc', 300) else pick('base_misc', 1200)
+    table.insert(parts, subrecord('FRMR', formId(nextSerial(), -1)))
+    table.insert(parts, subrecord('NAME', refId(item)))
+    table.insert(parts, subrecord('COUN', i32(nextRandom() % 20 + 1)))
+  end
+end
+
+--- An actor's AI: a wander, a follow of an actor by id, and a fight with one by reference.
+local function packages(parts: { string })
+  local followed = if chance(10) then pick('target_npc', 100) else pick('base_npc', 400)
+  table.insert(parts, subrecord('AIPK', 'WAND'))
+  table.insert(parts, subrecord('DATA', string.rep('\0', 14)))
+  table.insert(parts, subrecord('AIPK', 'FOLL'))
+  table.insert(parts, subrecord('TARG', refId(followed)))
+  table.insert(parts, subrecord('TAID', formId(nextSerial(), otherFile())))
+  table.insert(parts, subrecord('AIPK', 'COMB'))
+  table.insert(parts, subrecord('TARG', formId(nextSerial(), otherFile())))
+  table.insert(parts, subrecord('LAST', i32(-1)))
+end
+
+--- One object of a cell's state, and for about two in five the state an owner, a faction, a
+--- lock, an inventory, AI, or a script adds.
+local function object(parts: { string })
+  local file = placingFile()
+  local base = if file == 1
+    then (if chance(50) then pick('target_static', 500) else pick('base_static', 3000))
+    elseif file == 2 then pick('blood_static', 600)
+    elseif file == 3 then pick('mod_static', 150)
+    else pick('base_static', 3000)
+  -- An object of the removed content file's that another one placed.
+  if file ~= 1 and chance(2) then base = pick('target_misc', 300) end
+
+  table.insert(parts, subrecord('OBJE', 'STAT'))
+  table.insert(parts, subrecord('FRMR', formId(nextSerial(), file)))
+  table.insert(parts, subrecord('NAME', refId(base)))
+  table.insert(parts, subrecord('DATA', placement()))
+  local kind = nextRandom() % 100
+  if kind < 12 then
+    local owner = if chance(15) then pick('target_npc', 100) else pick('base_npc', 400)
+    table.insert(parts, subrecord('ANAM', refId(owner)))
+    if chance(30) then table.insert(parts, subrecord('BNAM', pick('base_global', 60))) end
+  elseif kind < 17 then
+    local faction = if chance(15) then pick('target_faction', 5) else pick('base_faction', 20)
+    table.insert(parts, subrecord('CNAM', refId(faction)))
+    table.insert(parts, subrecord('INDX', i32(nextRandom() % 10)))
+  elseif kind < 22 then
+    local key = if chance(15) then pick('target_misc', 300) else pick('base_misc', 1200)
+    local trap = if chance(15) then pick('target_spell', 60) else pick('base_spell', 200)
+    table.insert(parts, subrecord('FLTV', i32(nextRandom() % 100 + 1)))
+    table.insert(parts, subrecord('KNAM', refId(key)))
+    table.insert(parts, subrecord('TNAM', refId(trap)))
+  elseif kind < 30 then
+    -- Nothing of the removed content file's in a container it placed: a strip plans to delete
+    -- both the item and the container's whole group, and then refuses its own plan.
+    inventory(parts, nextRandom() % 6 + 1, if file == 1 then 0 else 5)
+  elseif kind < 35 then
+    packages(parts)
+  elseif kind < 38 then
+    table.insert(parts, subrecord('LUAS', i32(nextRandom() % 12)))
+    table.insert(parts, subrecord('LUAD', luaPayload()))
+  end
+end
+
+--- A cell's state: its objects, then two references that moved into it.
+local function cellState(cell: string, objects: number): string
+  local parts = { subrecord('NAME', refId(cell)), subrecord('WHGT', f32(0)) }
+  for _ = 1, objects do
+    object(parts)
+  end
+
+  for _ = 1, 2 do
+    table.insert(parts, subrecord('MVRF', formId(nextSerial(), placingFile())))
+    table.insert(parts, subrecord('NAME', refId(pick('base_cell', 200))))
+  end
+
+  return record('CSTA', table.concat(parts))
+end
+
+--- The player's state: where they are, their sign, sixty items, and what is equipped.
+local function player(): string
+  local parts = { subrecord('NAME', refId 'base_cell_7'), subrecord('SIGN', refId 'base_sign') }
+  inventory(parts, 60, 5)
+  local equipped = [for slot in range(0, 7) => u32(slot * 7) .. u32(slot)]
+  table.insert(parts, subrecord('EQIP', u32(#equipped) .. table.concat(equipped)))
+  table.insert(parts, subrecord('SELE', i32(41)))
+  return record('PLAY', table.concat(parts))
+end
+
+local JournalText = 'I was told to look for the missing shipment.\n'
+  .. 'The trail leads east, past the old watchtower.\n'
+
+--- A record no rule knows: an id, text of several lines, numbers, and bytes.
+local function journal(index: number): string
+  local blob = table.concat([for _ in range(1, 10) => u32(nextRandom())])
+  return record(
+    'JOUR',
+    table.concat {
+      subrecord('NAME', refId(`topic_{index}`)),
+      subrecord('TEXT', JournalText),
+      subrecord('DAY_', i32(nextRandom() % 30)),
+      subrecord('ACTR', pick('base_npc', 400)),
+      subrecord('WGHT', f32(nextRandom() % 100000 / 37)),
+      subrecord('HASH', u32(nextRandom()) .. u32(nextRandom())),
+      subrecord('BLOB', blob),
+    }
+  )
+end
+
+--- The removed content file's id one time in `percent`, the master's otherwise.
+local function either(percent: number, target: string, targets: number, base: string, bases: number): string
+  return if chance(percent) then pick(target, targets) else pick(base, bases)
+end
+
+--- The records a strip has a rule for outside cell and player state.
+local function stateRecords(records: { string })
+  for index = 1, 60 do
+    local id = if index % 12 == 0 then `target_global_{index // 12}` else `base_global_{index}`
+    table.insert(
+      records,
+      record(
+        'GLOB',
+        subrecord('NAME', refId(id)) .. subrecord('FNAM', 's') .. subrecord('FLTV', f32(index))
+      )
+    )
+  end
+
+  for index = 1, 20 do
+    table.insert(
+      records,
+      record(
+        'GSCR',
+        table.concat {
+          subrecord('NAME', refId(`base_script_{index}`)),
+          subrecord('TARG', refId(either(10, 'target_npc', 100, 'base_npc', 400))),
+          subrecord('FRMR', formId(nextSerial(), otherFile())),
+        }
+      )
+    )
+  end
+
+  local deaths = {}
+  for _ = 1, 150 do
+    table.insert(deaths, subrecord('ID__', refId(pick('base_npc', 400))))
+    table.insert(deaths, subrecord('COUN', i32(nextRandom() % 9 + 1)))
+  end
+
+  table.insert(records, record('DCOU', table.concat(deaths)))
+  local spells = {}
+  for _ = 1, 60 do
+    table.insert(
+      spells,
+      subrecord('SPEL', refId(either(10, 'target_spell', 60, 'base_spell', 200)))
+    )
+  end
+
+  for _ = 1, 10 do
+    table.insert(
+      spells,
+      subrecord('USED', refId(either(20, 'target_spell', 60, 'base_spell', 200)))
+    )
+    table.insert(spells, subrecord('TIME', string.rep('\0', 12)))
+  end
+
+  table.insert(spells, subrecord('SLCT', refId 'base_spell_3'))
+  table.insert(records, record('SPLM', table.concat(spells)))
+  for _ = 1, 30 do
+    table.insert(
+      records,
+      record(
+        'ACTS',
+        table.concat {
+          subrecord('SPID', refId(pick('base_spell', 200))),
+          subrecord('CAST', formId(nextSerial(), otherFile())),
+          subrecord('ITEM', formId(nextSerial(), otherFile())),
+          subrecord('SUM_', formId(nextSerial(), otherFile())),
+        }
+      )
+    )
+  end
+
+  local stolen = {}
+  for _ = 1, 30 do
+    table.insert(
+      stolen,
+      subrecord('NAME', refId(either(10, 'target_misc', 300, 'base_misc', 1200)))
+    )
+    table.insert(stolen, subrecord('ONAM', refId(pick('base_npc', 400))))
+    table.insert(stolen, subrecord('COUN', i32(1)))
+  end
+
+  table.insert(records, record('STLN', table.concat(stolen)))
+  for index = 1, 6 do
+    local cell = if index == 6 then 'target_cell_2' else pick('base_cell', 200)
+    table.insert(
+      records,
+      record(
+        'MARK',
+        subrecord('POSX', f32(index)) .. subrecord('POSY', f32(-index)) .. subrecord('NAME', refId(cell))
+      )
+    )
+  end
+
+  for index = 1, 10 do
+    local arrow = if index == 10 then 'target_misc_9' else pick('base_misc', 1200)
+    table.insert(
+      records,
+      record(
+        'PROJ',
+        table.concat {
+          subrecord('ID__', refId(arrow)),
+          subrecord('ACTO', formId(nextSerial(), otherFile())),
+          subrecord('BOW_', refId(pick('base_misc', 1200))),
+        }
+      )
+    )
+
+    table.insert(
+      records,
+      record(
+        'MPRJ',
+        table.concat {
+          subrecord('ID__', refId(pick('base_misc', 1200))),
+          subrecord('ACTO', formId(nextSerial(), otherFile())),
+          subrecord('SPEL', refId(pick('base_spell', 200))),
+          subrecord('ITEM', formId(nextSerial(), otherFile())),
+        }
+      )
+    )
+  end
+end
+
+--- The save: its header and SAVE record, the player and the records they made, global state, the
+--- player's and forty-eight cells' state, scripts, and a journal.
+local function save(): buffer
+  local records = {}
+  table.insert(
+    records,
+    record(
+      'NPC_',
+      table.concat {
+        subrecord('NAME', refId 'player'),
+        subrecord('RNAM', refId 'base_race'),
+        subrecord('CNAM', refId 'base_class'),
+        subrecord('BNAM', refId 'base_head'),
+        subrecord('KNAM', refId 'base_hair'),
+      }
+    )
+  )
+
+  for index = 1, 30 do
+    table.insert(
+      records,
+      record(
+        'SPEL',
+        subrecord('NAME', refId(`dynamic_spell_{index}`)) .. subrecord('FNAM', `Spell {index}\0`)
+      )
+    )
+  end
+
+  for index = 1, 20 do
+    table.insert(
+      records,
+      record(
+        'CREA',
+        table.concat {
+          subrecord('NAME', refId(`dynamic_creature_{index}`)),
+          subrecord('ACID', formId(nextSerial(), otherFile())),
+          subrecord('SPAW', formId(nextSerial(), otherFile())),
+        }
+      )
+    )
+  end
+
+  stateRecords(records)
+  table.insert(records, player())
+  for index = 1, 48 do
+    local cell = if index % 12 == 0 then `target_cell_{index}` else `base_cell_{index}`
+    table.insert(records, cellState(cell, if index % 24 == 5 then 800 else 100))
+  end
+
+  local scripts = [
+    for index in range(1, 12)
+    => subrecord('LUAP', `scripts/bench/script_{index}.lua\0`)
+  ]
+  table.insert(scripts, subrecord('LUAD', luaPayload()))
+  table.insert(records, record('LUAM', table.concat(scripts)))
+  for _ = 1, 60 do
+    table.insert(
+      records,
+      record(
+        'LUAM',
+        subrecord('FRMR', formId(nextSerial(), otherFile())) .. subrecord('LUAD', luaPayload())
+      )
+    )
+  end
+
+  for index = 1, 300 do
+    table.insert(records, journal(index))
+  end
+
+  local screenshot = '\255\216' .. table.concat([for _ in range(1, 8192) => u32(nextRandom())])
+  local fields = {
+    subrecord('PLNA', 'Tester'),
+    subrecord('PLLE', i32(21)),
+    subrecord('PLCL', '\2base_class'),
+    subrecord('PLCN', 'Pilgrim'),
+    subrecord('PLCE', 'Seyda Neen'),
+    subrecord('TSTM', f32(8.5) .. i32(18) .. i32(7) .. i32(427)),
+    subrecord('TIME', string.pack('<d', 12.5)),
+    subrecord('DESC', 'bench'),
+  }
+
+  for _, name in Dependencies do
+    table.insert(fields, subrecord('DEPE', name .. '\0'))
+  end
+
+  table.insert(fields, subrecord('SCRN', screenshot))
+  table.insert(fields, subrecord('CDAY', i32(3)))
+  table.insert(fields, subrecord('CHLT', f32(42)))
+  table.insert(fields, subrecord('MHLT', f32(100)))
+  local header = {
+    subrecord('FORM', u32(tes3.save.CurrentFormatVersion)),
+    subrecord('HEDR', f32(1.3) .. u32(0) .. sized '' .. sized '' .. u32(#records + 1)),
+  }
+
+  for _, name in Dependencies do
+    table.insert(header, subrecord('MAST', name .. '\0'))
+    table.insert(header, subrecord('DATA', string.pack('<I8', 0)))
+  end
+
+  return buffer.fromstring(
+    record('TES3', table.concat(header))
+      .. record('SAVE', table.concat(fields))
+      .. table.concat(records)
+  )
+end
+
+local saved = save()
+local savePath = `{scratch}/bench.omwsave`
+
+assert(fs.writeFile(savePath, saved))
+
+local opened = saves.parse(saved, { name = 'bench' })
+local everything = loadOrder(Dependencies)
+local withoutTribunal = loadOrder { 'Morrowind.esm', 'Bloodmoon.esm', 'Mod.esp' }
+
+--[[ Digests ]]
+
+local function checksum(text: string | buffer): number return bytes.crc32(text) end
+
+--- A check's whole report, as the command line writes it.
+local function checkDigest(report: saves.Check): number
+  return checksum(
+    cli.render({ command = 'check', path = 'bench', check = report }, { format = 'json' })
+  )
+end
+
+type Stripped = { report: { [string]: unknown }, bytes: buffer }
+
+--- A strip in memory: its report, and the save it left.
+local function strip(dependency: string, order: saves.LoadOrder): Stripped
+  local target: saves.Save = { plugin = opened.plugin, game = opened.game, name = opened.name }
+  local report = saves.strip(target, { dependency }, { loadOrder = order, mode = 'inMemory' })
+  return { report = report, bytes = target.plugin:save() }
+end
+
+--- A strip's whole report, as the command line writes it, and the bytes of the stripped save.
+local function stripDigest(result: Stripped): number
+  local document = cli.render({
+    command = 'strip',
+    path = 'bench',
+    dryRun = false,
+    blocked = result.report.blocked == true,
+    report = result.report,
+  }, { format = 'json' })
+
+  return bit32.bxor(checksum(document), checksum(result.bytes))
+end
+
+--- How many values a plain value holds, and the bytes of its strings.
+local function weigh(value: unknown): number
+  if type(value) == 'string' then return 1 + #value end
+
+  if type(value) ~= 'table' then return 1 end
+
+  local total = 1
+  for key, item in value :: { [unknown]: unknown } do
+    total += weigh(key) + weigh(item)
+  end
+
+  return total
+end
+
+--- A dump as the command line prints one: a page at a time, each page's part of the document.
+local function dump(request: commands.DumpRequest, format: cli.Format): string
+  local parts = {}
+  local from: number?, fromSubrecord: number? = nil, nil
+  local continued = false
+  while true do
+    local page = table.clone(request)
+    page.from, page.limit, page.byteLimit = from, 256, 64 * 1024
+    page.fromSubrecord, page.subrecordLimit = fromSubrecord, 1024
+    local result = commands.dump(page)
+    local document = cli.render(result, { format = format, continued = continued })
+    table.insert(parts, document)
+    from, fromSubrecord = result.next, result.nextSubrecord
+    if not from then break end
+
+    continued = continued or document ~= ''
+  end
+
+  return table.concat(parts)
+end
+
+--[[ The workloads ]]
+
+workload(
+  'open a save',
+  602,
+  function() return saves.parse(saved, { name = 'bench' }) end,
+  function(save) return save.plugin:count() end
+)
+
+workload(
+  'info',
+  20068404,
+  function() return saves.info(opened) end,
+  function(info)
+    return checksum(cli.render({ command = 'info', path = 'bench', info = info }, { format = 'json' }))
+  end
+)
+
+workload(
+  'validate',
+  4000,
+  function() return saves.validate(opened.plugin) end,
+  function(validation) return #validation.checks * 1000 + #validation.diagnostics end
+)
+
+workload(
+  'decode every Lua payload',
+  363496,
+  function() return saves.luaData(opened) end,
+  weigh
+)
+
+workload(
+  'check against the load order',
+  2589871511,
+  function() return saves.check(opened, { loadOrder = everything, originalCodes = true }) end,
+  checkDigest
+)
+
+workload(
+  'check against a load order without Tribunal.esm',
+  2154444367,
+  function() return saves.check(opened, { loadOrder = withoutTribunal, originalCodes = true }) end,
+  checkDigest
+)
+
+workload(
+  'strip Tribunal.esm',
+  1096330282,
+  function() return strip('Tribunal.esm', everything) end,
+  stripDigest
+)
+
+workload(
+  'strip Tribunal.esm, which is not installed',
+  769384462,
+  function() return strip('Tribunal.esm', withoutTribunal) end,
+  stripDigest
+)
+
+workload(
+  'strip Mod.esp, the last content file',
+  1649202649,
+  function() return strip('Mod.esp', everything) end,
+  stripDigest
+)
+
+workload(
+  'plan a strip of Bloodmoon.esm, which is blocked',
+  390016910,
+  function() return strip('Bloodmoon.esm', everything) end,
+  stripDigest
+)
+
+workload(
+  'tree of every record',
+  3167654757,
+  function() return saves.tree(opened) end,
+  function(records)
+    return checksum(
+      cli.render(
+        { command = 'dump', path = 'bench', mode = 'records', records = records },
+        { format = 'json' }
+      )
+    )
+  end
+)
+
+workload('values of every record', 1021980, function() return saves.values(opened) end, weigh)
+
+workload(
+  'dump as YAML',
+  2471641922,
+  function() return dump({ path = savePath }, 'yaml') end,
+  checksum
+)
+
+workload(
+  'dump as JSON',
+  3167654757,
+  function() return dump({ path = savePath }, 'json') end,
+  checksum
+)
+
+workload(
+  'dump the byte layout as JSON',
+  1165445744,
+  function() return dump({ path = savePath, raw = true }, 'json') end,
+  checksum
+)
+
+workload(
+  'dump the byte layout as YAML',
+  4201338317,
+  function() return dump({ path = savePath, raw = true }, 'yaml') end,
+  checksum
+)
+
+workload(
+  'list every record',
+  435727617,
+  function() return dump({ path = savePath, list = true }, 'yaml') end,
+  checksum
+)
+
+workload(
+  'list the records whose id matches a pattern',
+  999182612,
+  function()
+    return dump({ path = savePath, list = true, selectors = { id = '^(topic|dynamic)_.*[05]$' } }, 'yaml')
+  end,
+  checksum
+)
+
+workload(
+  'extract the cell states',
+  791252,
+  function()
+    return commands.dump {
+      path = savePath,
+      selectors = { type = 'CSTA' },
+      rawOutput = `{scratch}/extracted.esp`,
+      header = true,
+      dryRun = true,
+    }
+  end,
+  function(result) return result.bytes or 0 end
+)
