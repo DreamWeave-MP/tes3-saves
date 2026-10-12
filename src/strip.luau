@@ -483,11 +483,7 @@ local function dependsOn(index: LoadOrder.Index, dependency: string, target: str
     error(`failed to read masters of '{dependency}': {index.mastersProblem}`, 0)
   end
 
-  for _, master in masters do
-    if string.lower(master) == string.lower(target) then return true end
-  end
-
-  return false
+  return any[for master in masters => string.lower(master) == string.lower(target)]
 end
 
 --- Provenance for a target that isn't installed: every id the save refers to that neither a
@@ -596,13 +592,10 @@ local function provenanceOf(
   end
 
   local reader = order :: LoadOrder.LoadOrder
-  local unresolvedBeforeTarget = false
-  for ordinal = 1, target do
-    if not resolutions[ordinal].path and Records.isRecordContentFile(dependencies[ordinal]) then
-      unresolvedBeforeTarget = true
-      break
-    end
-  end
+  local unresolvedBeforeTarget = any[
+    for ordinal in range(1, target)
+    => not resolutions[ordinal].path and Records.isRecordContentFile(dependencies[ordinal])
+  ]
 
   local types: { [number]: { [string]: boolean } } = {}
   local firstAt: { [number]: number }, firstTag: { [number]: string } = {}, {}
@@ -976,14 +969,7 @@ local function formatSupport(version: number): Format
 end
 
 local function countEdits(edits: { Edit }, keep: (Edit) -> boolean): number
-  local count = 0
-  for _, edit in edits do
-    if keep(edit) then
-      count += 1
-    end
-  end
-
-  return count
+  return #[for edit in edits if keep(edit) => edit]
 end
 
 local function isBlocked(edit: Edit): boolean return edit.status == 'blocked' end
@@ -1550,14 +1536,7 @@ local function renumberEquipment(rewrite: Rewrite, countAt: number, removed: { n
   end
 
   local function shifted(position: number): number
-    local below = 0
-    for _, other in removed do
-      if other < position then
-        below += 1
-      end
-    end
-
-    return position - below
+    return position - #[for other in removed if other < position => other]
   end
 
   local snapshot = rewrite.record
@@ -1631,12 +1610,11 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
       'delete_inventory_item_group has no preceding ICNT'
     )
     -- Every inventory item group starts with FRMR, so its position is the FRMRs before it.
-    local position = 0
-    for subrecordIndex = countAt + 1, start - 1 do
-      if Records.tagAt(snapshot, subrecordIndex) == 'FRMR' then
-        position += 1
-      end
-    end
+    local position = #[
+      for subrecordIndex in range(countAt + 1, start - 1)
+      if Records.tagAt(snapshot, subrecordIndex) == 'FRMR'
+      => subrecordIndex
+    ]
 
     local key = `{record}:{countAt}`
     local entry = removals[key]
@@ -1817,17 +1795,10 @@ local function verifyResult(plugin: Plugin, before: { string }, index: number, d
   local ok, profile = pcall(tes3.save.profile, plugin)
   if not ok then error(`failed to read dry-run save metadata: {profile}`, 0) end
 
-  local expected = {}
-  for ordinal, name in before do
-    if ordinal - 1 ~= index then table.insert(expected, name) end
-  end
-
+  local expected = [for ordinal, name in enumerate(before) if ordinal - 1 ~= index => name]
   local dependencies = (profile :: tes3.SaveProfile).dependencies
   local same = #dependencies == #expected
-  for ordinal, name in expected do
-    same = same and dependencies[ordinal] == name
-  end
-
+    and all[for ordinal, name in enumerate(expected) => dependencies[ordinal] == name]
   if not same then
     error('dry-run dependency list does not match the planned SAVE.DEPE removal', 0)
   end
@@ -1839,10 +1810,7 @@ local function verifyResult(plugin: Plugin, before: { string }, index: number, d
   local list = masters :: { tes3.Master }
   if #list > 0 then
     local matches = #list == #expected
-    for ordinal, master in list do
-      matches = matches and master.name == expected[ordinal]
-    end
-
+      and all[for ordinal, master in enumerate(list) => master.name == expected[ordinal]]
     if not matches then
       error('dry-run TES3.MAST list does not match the planned dependency removal', 0)
     end
@@ -1868,20 +1836,19 @@ local function verifyPostMutation(
   provenance: Provenance?
 ): PostMutation
   local records = Records.all(plugin)
-  local invalid = 0
-  for _, hit in Scan.contentFileHits(records) do
-    if hit.contentFile >= dependenciesAfter then
-      invalid += 1
-    end
-  end
+  local invalid = #[
+    for hit in Scan.contentFileHits(records)
+    if hit.contentFile >= dependenciesAfter
+    => hit
+  ]
 
   local remaining = 0
   if provenance then
-    for _, field in Scan.refIdFields(records) do
-      if roleOf(provenance, field.id) == 'introduced_by_target' then
-        remaining += 1
-      end
-    end
+    remaining = #[
+      for field in Scan.refIdFields(records)
+      if roleOf(provenance, field.id) == 'introduced_by_target'
+      => field
+    ]
   end
 
   if invalid > 0 or remaining > 0 then
@@ -1943,13 +1910,10 @@ end
 --[[ Reports ]]
 
 local function concernReport(concerns: { Concern }, spell: Spell): { { [string]: unknown } }
-  local out: { { [string]: unknown } } = {}
-  for _, concern in concerns do
-    out[#out + 1] =
-      { kind = spell(concern.kind), count = concern.count, action = spell(concern.action) }
-  end
-
-  return out
+  return [
+    for {kind, count, action} in concerns
+    => { kind = spell(kind), count = count, action = spell(action) }
+  ]
 end
 
 local function editReport(edit: Edit, spell: Spell): { [string]: unknown }
@@ -2023,11 +1987,11 @@ local function strip(
   local read, profile = pcall(tes3.save.profile, plugin)
   if not read then error(`failed to read the save metadata of '{save.name}': {profile}`, 0) end
 
-  local all = (profile :: tes3.SaveProfile).dependencies
+  local listed = (profile :: tes3.SaveProfile).dependencies
   local requested: { [number]: boolean } = {}
   for _, name in dependencies do
     local found: number? = nil
-    for ordinal, dependency in all do
+    for ordinal, dependency in listed do
       if string.lower(dependency) == string.lower(name) then
         found = ordinal
         break
@@ -2039,14 +2003,11 @@ local function strip(
     requested[found] = true
   end
 
-  local removal = {}
-  for ordinal = #all, 1, -1 do
-    if requested[ordinal] then table.insert(removal, all[ordinal]) end
-  end
+  local removal = [for ordinal in range(#listed, 1, -1) if requested[ordinal] => listed[ordinal]]
 
   local contentEncoding = order and order.encoding or encoding
   local resolutions: { [string]: Resolution } = {}
-  for _, dependency in all do
+  for _, dependency in listed do
     local resolution: Resolution
     if order then
       local path = order.resolve(dependency)
@@ -2096,11 +2057,10 @@ local function strip(
       end
     end
 
-    local stepResolutions: { Resolution } = {}
-    for ordinal, name in deps do
-      stepResolutions[ordinal] = resolutions[string.lower(name)]
-        or { status = 'missing' } :: Resolution
-    end
+    local stepResolutions: { Resolution } = [
+      for name in deps
+      => resolutions[string.lower(name)] or { status = 'missing' } :: Resolution
+    ]
 
     local targetResolution = stepResolutions[index + 1]
     local others = table.clone(alsoRemoved)
@@ -2203,20 +2163,11 @@ local function strip(
       )
     end
 
-    local edited = {}
-    for _, edit in edits do
-      table.insert(edited, editReport(edit, spell))
-    end
-
-    local planned = {}
-    for _, operation in operations do
-      table.insert(planned, {
-        name = spell(operation.name),
-        status = spell(operation.status),
-        count = operation.count,
-        reason = spell(operation.reason),
-      })
-    end
+    local edited = [for edit in edits => editReport(edit, spell)]
+    local planned = [
+      for {name, status, count, reason} in operations
+      => { name = spell(name), status = spell(status), count = count, reason = spell(reason) }
+    ]
 
     table.insert(steps, {
       dependency = dependency,
@@ -2239,14 +2190,7 @@ local function strip(
       contentFileReferences = fileReferences,
       referenceCoverage = {
         status = spell(coverage.status),
-        knownScans = (function()
-          local scans = {}
-          for _, scan in coverage.knownScans do
-            table.insert(scans, spell(scan))
-          end
-
-          return scans
-        end)(),
+        knownScans = [for scan in coverage.knownScans => spell(scan)],
         unclassifiedRiskyRecords = coverage.unclassifiedRiskyRecords,
       },
 
