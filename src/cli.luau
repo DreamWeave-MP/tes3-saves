@@ -385,12 +385,7 @@ local function texts(given: Given, name: string): { string }?
   local values = given.values[name]
   if not values then return nil end
 
-  local out: { string } = {}
-  for _, value in values do
-    if type(value) == 'string' then table.insert(out, value) end
-  end
-
-  return out
+  return [for value in values if type(value) == 'string' => value]
 end
 
 local Formats: { [string]: Format } = { yaml = 'yaml', json = 'json', toml = 'toml' }
@@ -476,7 +471,7 @@ local function parse(argv: { string }): (Request?, string?)
   end
 
   if command == 'strip' then
-    local dependencies = table.move(arguments, 2, #arguments, 1, {})
+    local dependencies = arguments[2:#arguments]
     if #dependencies == 0 then return nil, 'strip requires a content file to remove' end
 
     local dryRun = switch(given, 'dry-run')
