@@ -1350,17 +1350,38 @@ end
 --- A record's header (its tag, size, and flags), and a subrecord's (its tag and size).
 local RecordHeader, SubrecordHeader = 16, 8
 
---- A record some of whose payloads are remapped: where its bytes are, its subrecords as they
---- were, and the payloads that take the place of the ones at these positions (0-based).
-type Rewrite = {
-  source: buffer,
-  start: number,
-  subs: { tes3.Subrecord },
-  payloads: { [number]: buffer },
-}
+--- A record some of whose payloads are being replaced: the record as it was, where its bytes
+--- start, and the payloads that take the place of the ones at these positions (0-based).
+type Rewrite = { record: Record, start: number, payloads: { [number]: buffer } }
+
+--- The records of a save whose payloads are being replaced, in the order they were come to.
+--- Replacing a subrecord rebuilds its record, and a cell's record holds thousands to replace, so
+--- the payloads are gathered here and each record is rebuilt once.
+type Rewrites = { plugin: Plugin, records: { [number]: Rewrite }, order: { number } }
+
+local function rewriteOf(rewrites: Rewrites, index: number): Rewrite
+  local rewrite = rewrites.records[index]
+  if not rewrite then
+    local plugin = rewrites.plugin
+    local _, start = plugin:span(index)
+    rewrite = { record = Records.record(plugin, index), start = start, payloads = {} }
+    rewrites.records[index] = rewrite
+    table.insert(rewrites.order, index)
+  end
+
+  return rewrite
+end
+
+--- A subrecord's payload as a rewrite has it now: the one that replaces it, else its own.
+local function payloadNow(rewrite: Rewrite, position: number): string
+  local replaced = rewrite.payloads[position]
+  if replaced then return buffer.tostring(replaced) end
+
+  return Records.payload(rewrite.record, position)
+end
 
 --- A record's bytes with a rewrite's payloads in place of the ones it had.
-local function rewritten({source, start, subs, payloads}: Rewrite): buffer
+local function rewritten({record: {source, subs}, start, payloads}: Rewrite): buffer
   local length = sum[
     for ordinal, sub in enumerate(subs)
     => if payloads[ordinal - 1]
@@ -1388,13 +1409,17 @@ local function rewritten({source, start, subs, payloads}: Rewrite): buffer
   return out
 end
 
+--- Rebuilds each record a payload of was replaced.
+local function applyRewrites(rewrites: Rewrites)
+  for _, index in rewrites.order do
+    rewrites.plugin:replaceBytes(index, rewritten(rewrites.records[index]))
+  end
+end
+
 local function replacePayloads(plugin: Plugin, edits: { Edit })
   -- A LUAD payload gets one planned edit per RefNum in it, but one remap rewrites all of them.
   local remappedLua: { [string]: boolean } = {}
-  -- A cell's record holds thousands of references to remap, and replacing a subrecord rebuilds
-  -- its record: each record is rebuilt once, after the last of its remaps.
-  local rewrites: { [number]: Rewrite } = {}
-  local order: { number } = {}
+  local rewrites: Rewrites = { plugin = plugin, records = {}, order = {} }
   for _, edit in edits do
     if edit.status ~= 'planned' or edit.operation ~= 'remap_content_file_index' then continue end
 
@@ -1406,19 +1431,12 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
       error('remap_content_file_index record index is out of bounds', 0)
     end
 
-    local rewrite = rewrites[record]
-    if not rewrite then
-      local source, start = plugin:span(record)
-      rewrite = { source = source, start = start, subs = plugin:subrecords(record), payloads = {} }
-      rewrites[record] = rewrite
-      table.insert(order, record)
-    end
-
-    local sub = rewrite.subs[position + 1]
+    local rewrite = rewriteOf(rewrites, record)
+    local sub = rewrite.record.subs[position + 1]
     if not sub then error('remap_content_file_index subrecord index is out of bounds', 0) end
 
     -- The payload as it is now: a remap of this subrecord before this one has replaced it.
-    local source, at, size = rewrite.source, sub.payload, sub.size
+    local source, at, size = rewrite.record.source, sub.payload, sub.size
     local replaced = rewrite.payloads[position]
     if replaced then
       source, at, size = replaced, 0, buffer.len(replaced)
@@ -1454,9 +1472,7 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
     rewrite.payloads[position] = payload
   end
 
-  for _, record in order do
-    plugin:replaceBytes(record, rewritten(rewrites[record]))
-  end
+  applyRewrites(rewrites)
 end
 
 local function verifyRemapped(plugin: Plugin, edits: { Edit })
@@ -1516,12 +1532,7 @@ end
 
 --- EQIP and SELE point at inventory items by position (openmw inventorystate.cpp:149-163), so
 --- removing items drops equipment on them and shifts later positions down.
-local function renumberEquipment(
-  plugin: Plugin,
-  record: number,
-  countAt: number,
-  removed: { number }
-)
+local function renumberEquipment(rewrite: Rewrite, countAt: number, removed: { number })
   local gone: { [number]: boolean } = {}
   for _, position in removed do
     gone[position] = true
@@ -1538,7 +1549,7 @@ local function renumberEquipment(
     return position - below
   end
 
-  local snapshot = Records.record(plugin, record)
+  local snapshot = rewrite.record
   -- This inventory's trailing subrecords run until the next object group or inventory.
   local finish = #snapshot.subs
   for subrecordIndex = countAt + 1, #snapshot.subs - 1 do
@@ -1552,8 +1563,8 @@ local function renumberEquipment(
   local replacements: { { number | string } } = {}
   for subrecordIndex = countAt + 1, finish - 1 do
     local tag = Records.tagAt(snapshot, subrecordIndex)
-    local data = Records.payload(snapshot, subrecordIndex)
     if tag == 'EQIP' then
+      local data = payloadNow(rewrite, subrecordIndex)
       if #data < 4 then error('EQIP payload is too short', 0) end
 
       local kept = {}
@@ -1572,6 +1583,7 @@ local function renumberEquipment(
 
       table.insert(replacements, { subrecordIndex, table.concat(parts) })
     elseif tag == 'SELE' then
+      local data = payloadNow(rewrite, subrecordIndex)
       if #data ~= 4 then error('SELE payload is not 4 bytes', 0) end
 
       local selected = Records.i32At(data)
@@ -1583,7 +1595,7 @@ local function renumberEquipment(
   end
 
   for _, replacement in replacements do
-    plugin:replaceSubrecord(record, replacement[1] :: number, replacement[2] :: string)
+    rewrite.payloads[replacement[1] :: number] = buffer.fromstring(replacement[2] :: string)
   end
 end
 
@@ -1592,8 +1604,7 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
   type Removal = { record: number, countAt: number, removed: { number } }
   local removals: { [string]: Removal } = {}
   local order: { Removal } = {}
-  -- The save isn't changed until every deletion has its inventory, so a record is read once.
-  local snapshots: { [number]: Record } = {}
+  local rewrites: Rewrites = { plugin = plugin, records = {}, order = {} }
   for _, edit in edits do
     if edit.status ~= 'planned' or edit.operation ~= 'delete_inventory_item_group' then continue end
 
@@ -1603,11 +1614,7 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
       error('delete_inventory_item_group record index is out of bounds', 0)
     end
 
-    local snapshot = snapshots[record]
-    if not snapshot then
-      snapshot = Records.record(plugin, record)
-      snapshots[record] = snapshot
-    end
+    local snapshot = rewriteOf(rewrites, record).record
     local countAt = need(
       Scan.inventoryCountFor(snapshot, start),
       'delete_inventory_item_group has no preceding ICNT'
@@ -1638,16 +1645,18 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
   end)
 
   for _, entry in order do
-    renumberEquipment(plugin, entry.record, entry.countAt, entry.removed)
-    local snapshot = Records.record(plugin, entry.record)
-    local data = Records.payload(snapshot, entry.countAt)
+    local rewrite = rewriteOf(rewrites, entry.record)
+    renumberEquipment(rewrite, entry.countAt, entry.removed)
+    local data = payloadNow(rewrite, entry.countAt)
     if #data ~= 4 then error('ICNT payload is not 4 bytes', 0) end
 
     local count = Records.u32At(data) - #entry.removed
     if count < 0 then error('inventory item deletion count exceeds ICNT', 0) end
 
-    plugin:replaceSubrecord(entry.record, entry.countAt, string.pack('<I4', count))
+    rewrite.payloads[entry.countAt] = buffer.fromstring(string.pack('<I4', count))
   end
+
+  applyRewrites(rewrites)
 end
 
 local SubrecordDeletions: { [string]: boolean } = {
@@ -1716,7 +1725,7 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
 
     local count = counts[deletion.record]
     if not count then
-      count = #plugin:subrecords(deletion.record)
+      count = Records.count(plugin, deletion.record)
       counts[deletion.record] = count
     end
 

@@ -29,6 +29,21 @@ local function record(plugin: Plugin, index: number): Record
   }
 end
 
+--- A record's header (its tag, size, and flags), and a subrecord's (its tag and size).
+local RecordHeader, SubrecordHeader = 16, 8
+
+--- How many subrecords record `index` has, counted where they are: nothing is listed.
+local function count(plugin: Plugin, index: number): number
+  local source, start, finish = plugin:span(index)
+  local total, position = 0, start + RecordHeader
+  while position < finish do
+    total += 1
+    position += SubrecordHeader + buffer.readu32(source, position + 4)
+  end
+
+  return total
+end
+
 --- Every record of `plugin`, in order.
 local function all(plugin: Plugin): { Record }
   local out: { Record } = {}
@@ -157,6 +172,7 @@ end
 
 return table.freeze {
   all = all,
+  count = count,
   equalsIgnoringCase = equalsIgnoringCase,
   f32At = f32At,
   i32At = i32At,
