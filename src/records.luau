@@ -46,12 +46,7 @@ end
 
 --- Every record of `plugin`, in order.
 local function all(plugin: Plugin): { Record }
-  local out: { Record } = {}
-  for index = 0, plugin:count() - 1 do
-    out[index + 1] = record(plugin, index)
-  end
-
-  return out
+  return [for index in range(0, plugin:count() - 1) => record(plugin, index)]
 end
 
 --- Subrecord `position` (0-based) of `record`, or nil.
