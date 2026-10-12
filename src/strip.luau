@@ -1339,9 +1339,54 @@ local function remapLua(value: tes3.LuaValue, old: number, new: number): number
   return count
 end
 
+--- A record's header (its tag, size, and flags), and a subrecord's (its tag and size).
+local RecordHeader, SubrecordHeader = 16, 8
+
+--- A record some of whose payloads are remapped: where its bytes are, its subrecords as they
+--- were, and the payloads that take the place of the ones at these positions (0-based).
+type Rewrite = {
+  source: buffer,
+  start: number,
+  subs: { tes3.Subrecord },
+  payloads: { [number]: buffer },
+}
+
+--- A record's bytes with a rewrite's payloads in place of the ones it had.
+local function rewritten({source, start, subs, payloads}: Rewrite): buffer
+  local length = sum[
+    for ordinal, sub in enumerate(subs)
+    => if payloads[ordinal - 1]
+      then SubrecordHeader + buffer.len(payloads[ordinal - 1])
+      else sub.finish - sub.start
+  ]
+
+  local out = buffer.create(RecordHeader + length)
+  buffer.copy(out, 0, source, start, RecordHeader)
+  local at = RecordHeader
+  for ordinal, sub in subs do
+    local payload = payloads[ordinal - 1]
+    if not payload then
+      buffer.copy(out, at, source, sub.start, sub.finish - sub.start)
+      at += sub.finish - sub.start
+      continue
+    end
+
+    buffer.copy(out, at, source, sub.start, 4)
+    buffer.writeu32(out, at + 4, buffer.len(payload))
+    buffer.copy(out, at + SubrecordHeader, payload)
+    at += SubrecordHeader + buffer.len(payload)
+  end
+
+  return out
+end
+
 local function replacePayloads(plugin: Plugin, edits: { Edit })
   -- A LUAD payload gets one planned edit per RefNum in it, but one remap rewrites all of them.
   local remappedLua: { [string]: boolean } = {}
+  -- A cell's record holds thousands of references to remap, and replacing a subrecord rebuilds
+  -- its record: each record is rebuilt once, after the last of its remaps.
+  local rewrites: { [number]: Rewrite } = {}
+  local order: { number } = {}
   for _, edit in edits do
     if edit.status ~= 'planned' or edit.operation ~= 'remap_content_file_index' then continue end
 
@@ -1353,11 +1398,24 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
       error('remap_content_file_index record index is out of bounds', 0)
     end
 
-    local subs = plugin:subrecords(record)
-    local sub = subs[position + 1]
+    local rewrite = rewrites[record]
+    if not rewrite then
+      local source, start = plugin:span(record)
+      rewrite = { source = source, start = start, subs = plugin:subrecords(record), payloads = {} }
+      rewrites[record] = rewrite
+      table.insert(order, record)
+    end
+
+    local sub = rewrite.subs[position + 1]
     if not sub then error('remap_content_file_index subrecord index is out of bounds', 0) end
 
-    local source = plugin:span(record)
+    -- The payload as it is now: a remap of this subrecord before this one has replaced it.
+    local source, at, size = rewrite.source, sub.payload, sub.size
+    local replaced = rewrite.payloads[position]
+    if replaced then
+      source, at, size = replaced, 0, buffer.len(replaced)
+    end
+
     if sub.tag == 'LUAD' then
       local old =
         need(edit.oldContentFileIndex, 'remap_content_file_index LUAD edit has no source index')
@@ -1366,29 +1424,38 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
 
       remappedLua[key] = true
       -- decodeLuaData throws on a payload that isn't serialized Lua.
-      local ok, value = pcall(tes3.save.decodeLuaData, source, sub.payload, sub.size)
+      local ok, value = pcall(tes3.save.decodeLuaData, source, at, size)
       if not ok then error(`failed to decode LUAD for remapping: {value}`, 0) end
 
       if remapLua(value :: tes3.LuaValue, old, new) == 0 then
         error('remap_content_file_index LUAD edit did not find the planned source index', 0)
       end
 
-      plugin:replaceSubrecord(record, position, tes3.save.encodeLuaData(value :: tes3.LuaValue))
+      rewrite.payloads[position] =
+        buffer.fromstring(tes3.save.encodeLuaData(value :: tes3.LuaValue))
       continue
     end
 
-    if sub.size ~= 8 then
+    if size ~= 8 then
       error(`{plugin:tag(record)} {sub.tag} payload is not an 8-byte OpenMW FormId`, 0)
     end
 
     local payload = buffer.create(8)
-    buffer.copy(payload, 0, source, sub.payload, 4)
+    buffer.copy(payload, 0, source, at, 4)
     buffer.writei32(payload, 4, new)
-    plugin:replaceSubrecord(record, position, payload)
+    rewrite.payloads[position] = payload
+  end
+
+  for _, record in order do
+    plugin:replaceBytes(record, rewritten(rewrites[record]))
   end
 end
 
 local function verifyRemapped(plugin: Plugin, edits: { Edit })
+  -- Nothing here changes the save: a record's subrecords are listed once, and a LUAD payload's
+  -- references read once, for however many remaps there are to look for in them.
+  local listed: { [number]: { tes3.Subrecord } } = {}
+  local references: { [tes3.Subrecord]: { tes3.LuaRef } } = {}
   for _, edit in edits do
     if edit.status ~= 'planned' or edit.operation ~= 'remap_content_file_index' then continue end
 
@@ -1401,25 +1468,30 @@ local function verifyRemapped(plugin: Plugin, edits: { Edit })
       error('remap_content_file_index verification record index is out of bounds', 0)
     end
 
-    local sub = plugin:subrecords(record)[position + 1]
+    local subs = listed[record]
+    if not subs then
+      subs = plugin:subrecords(record)
+      listed[record] = subs
+    end
+
+    local sub = subs[position + 1]
     if not sub then
       error('remap_content_file_index verification subrecord index is out of bounds', 0)
     end
 
     local source = plugin:span(record)
     if sub.tag == 'LUAD' then
-      -- decodeLuaData throws on a payload that isn't serialized Lua.
-      local ok, value = pcall(tes3.save.decodeLuaData, source, sub.payload, sub.size)
-      if not ok then error(`failed to decode remapped LUAD: {value}`, 0) end
+      local refs = references[sub]
+      if not refs then
+        -- decodeLuaData throws on a payload that isn't serialized Lua.
+        local ok, value = pcall(tes3.save.decodeLuaData, source, sub.payload, sub.size)
+        if not ok then error(`failed to decode remapped LUAD: {value}`, 0) end
 
-      local found = false
-      for _, ref in tes3.save.luaRefs(value :: tes3.LuaValue) do
-        if ref.index == localIndex and ref.contentFile == new then
-          found = true
-          break
-        end
+        refs = tes3.save.luaRefs(value :: tes3.LuaValue)
+        references[sub] = refs
       end
 
+      local found = any[for ref in refs => ref.index == localIndex and ref.contentFile == new]
       if not found then error('dry-run remapped LUAD does not contain the planned RefNum', 0) end
 
       continue
@@ -1512,6 +1584,8 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
   type Removal = { record: number, countAt: number, removed: { number } }
   local removals: { [string]: Removal } = {}
   local order: { Removal } = {}
+  -- The save isn't changed until every deletion has its inventory, so a record is read once.
+  local snapshots: { [number]: Record } = {}
   for _, edit in edits do
     if edit.status ~= 'planned' or edit.operation ~= 'delete_inventory_item_group' then continue end
 
@@ -1521,7 +1595,11 @@ local function updateInventoryCounts(plugin: Plugin, edits: { Edit })
       error('delete_inventory_item_group record index is out of bounds', 0)
     end
 
-    local snapshot = Records.record(plugin, record)
+    local snapshot = snapshots[record]
+    if not snapshot then
+      snapshot = Records.record(plugin, record)
+      snapshots[record] = snapshot
+    end
     local countAt = need(
       Scan.inventoryCountFor(snapshot, start),
       'delete_inventory_item_group has no preceding ICNT'
@@ -1617,6 +1695,8 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
   end)
 
   local previousRecord, previousFinish = -1, 0
+  -- How many subrecords each record has; nothing is deleted until every range is checked.
+  local counts: { [number]: number } = {}
   for _, deletion in deletions do
     if deletion.start >= deletion.finish then
       error(`{deletion.operation} planned an empty subrecord deletion range`, 0)
@@ -1626,7 +1706,13 @@ local function deleteSubrecords(plugin: Plugin, edits: { Edit })
       error(`{deletion.operation} record index is out of bounds`, 0)
     end
 
-    if deletion.finish > #plugin:subrecords(deletion.record) then
+    local count = counts[deletion.record]
+    if not count then
+      count = #plugin:subrecords(deletion.record)
+      counts[deletion.record] = count
+    end
+
+    if deletion.finish > count then
       error(`{deletion.operation} subrecord range is out of bounds`, 0)
     end
 
