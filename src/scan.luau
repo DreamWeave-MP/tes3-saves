@@ -590,11 +590,10 @@ end
 local function hasUnknownUserdata(value: tes3.LuaValue): boolean
   if value.kind == 'userdata' then return true end
 
-  for _, entry in value.entries or {} do
-    if hasUnknownUserdata(entry.key) or hasUnknownUserdata(entry.value) then return true end
-  end
-
-  return false
+  return any[
+    for {key, value: held} in value.entries or {}
+    => hasUnknownUserdata(key) or hasUnknownUserdata(held)
+  ]
 end
 
 --- Whether a record has a LUAD payload that doesn't decode or holds userdata jess can't read.
