@@ -1449,7 +1449,7 @@ local function replacePayloads(plugin: Plugin, edits: { Edit })
 
       remappedLua[key] = true
       -- decodeLuaData throws on a payload that isn't serialized Lua.
-      local ok, value = pcall(tes3.save.decodeLuaData, source, at, size)
+      local ok, value = pcall(tes3.save.decodeLuaData, source, at, size :: number)
       if not ok then error(`failed to decode LUAD for remapping: {value}`, 0) end
 
       if remapLua(value :: tes3.LuaValue, old, new) == 0 then
@@ -1947,7 +1947,7 @@ end
 local function concernReport(concerns: { Concern }, spell: Spell): { { [string]: unknown } }
   return [
     for {kind, count, action} in concerns
-    => { kind = spell(kind), count = count, action = spell(action) }
+    => { kind = spell(kind), count = count, action = spell(action) } :: { [string]: unknown }
   ]
 end
 

@@ -16,7 +16,16 @@ type Plugin = tes3.Plugin
 local RecordHeader, SubrecordHeader = 16, 8
 
 --- How a record's subrecords are framed: each a tag, its payload's size, and the payload.
-local Framing = table.freeze { header = SubrecordHeader, lengthAt = 4 }
+-- What `bytes.frame` takes: l3i declares the shape inline, with no name to use here.
+type Layout = {
+  header: number,
+  lengthAt: number,
+  lengthSize: number?,
+  bigEndian: boolean?,
+  inner: { header: number, lengthAt: number, lengthSize: number?, bigEndian: boolean? }?,
+}
+
+local Framing: Layout = { header = SubrecordHeader, lengthAt = 4 }
 
 --- A record, and where its subrecords are. They are kept as columns, a tag and a pair of offsets
 --- for each, and not as a table apiece: a cell's record holds tens of thousands, the rules walk

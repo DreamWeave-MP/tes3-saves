@@ -279,7 +279,7 @@ local function luaNode(value: LuaValue): Node
   end
 
   if kind == 'objectList' then
-    local items: { Node } = [for ref in value.refs or {} => refnum(ref)]
+    local items: { Node } = [for ref in value.refs or {} => refnum(ref) :: Node]
     return fields({ { 'objlist', list(items) } }, true)
   end
 
@@ -383,7 +383,7 @@ local function equipment(data: string): Node?
 
   local items: { Node } = [
     for index in range(0, count - 1)
-    => `item {Records.u32At(data, 5 + index * 8)} in slot {Records.u32At(data, 9 + index * 8)}`
+    => `item {Records.u32At(data, 5 + index * 8)} in slot {Records.u32At(data, 9 + index * 8)}` :: Node
   ]
 
   return list(items)
