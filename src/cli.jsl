@@ -601,7 +601,7 @@ end
 --- where it happened.
 local function reason(problem: unknown): string
   local message = tostring(problem)
-  return string.match(message, '^[^\n]-%.luau:%d+: (.*)$') or message
+  return string.match(message, '^[^\n]-%.jsl:%d+: (.*)$') or message
 end
 
 --- How much of a save a dump asks for at a time: so many records, or fewer when their bytes in

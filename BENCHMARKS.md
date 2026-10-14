@@ -1,6 +1,6 @@
 # tes3-saves benchmarks
 
-`bench/bench.luau` times save tooling the way a tool reaches it, through `@tes3-saves`,
+`bench/bench.jsl` times save tooling the way a tool reaches it, through `@tes3-saves`,
 `@tes3-saves/commands`, and `@tes3-saves/cli`: opening a save and reading what it says of itself,
 checking it against a load order, stripping a content file from it, and dumping it as values, as
 text, and as byte layouts. The save is synthetic and seeded: 949 KB, 602 records, 39,419
@@ -19,7 +19,7 @@ stops if one is wrong.
 
 ```sh
 jess run --package jpk/tes3-saves --package-path jpk --capability filesystem.read \
-  --capability filesystem.write jpk/tes3-saves/bench/bench.luau <scratch folder> [filter]
+  --capability filesystem.write jpk/tes3-saves/bench/bench.jsl <scratch folder> [filter]
 ```
 
 ## The move onto l3i 2.0, base against head

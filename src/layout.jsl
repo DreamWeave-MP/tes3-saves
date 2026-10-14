@@ -6,8 +6,8 @@
 Where a save's records and subrecords sit in its bytes (what `dump` gives with `raw`), and the
 selected records' bytes as a file of their own (`rawOutput`).
 
-`layout` and `references` are `@tes3cmd`'s, from its `src/display.luau` (its commit 0c85ddd), and
-`extractMatching` is its `src/edit.luau`'s (its commit 811a89d): byte layouts and extraction are
+`layout` and `references` are `@tes3cmd`'s, from its `src/display.jsl` (its commit 0c85ddd), and
+`extractMatching` is its `src/edit.jsl`'s (its commit 811a89d): byte layouts and extraction are
 that package's, and it depends on this one, so this one can't ask it for them. When they have a
 home below both packages, this file goes. One thing is added here: `layout` gives a record's
 subrecords in parts when asked (`from`, `limit`), because a save's cell records hold tens of

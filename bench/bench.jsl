@@ -9,7 +9,7 @@
 -- `name<TAB>seconds per call`, the median of seven batches. A dump is asked for in pages as the
 -- command line asks, without the collection it runs between them. Run on a release build:
 --   jess run --package . --package-path .. --capability filesystem.read \
---     --capability filesystem.write bench/bench.luau <scratch folder> [filter]
+--     --capability filesystem.write bench/bench.jsl <scratch folder> [filter]
 local bytes = require '@dream/bytes'
 local cli = require '@tes3-saves/cli'
 local commands = require '@tes3-saves/commands'

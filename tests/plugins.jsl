@@ -1,7 +1,7 @@
 --!strict
 --!native
 -- The plugin byte builders the save fixtures and cases use, copied from tes3cmd's suite
--- (`tests/fixtures.luau` there), which spells the synthetic plugins of jess's CLI tests
+-- (`tests/fixtures.jsl` there), which spells the synthetic plugins of jess's CLI tests
 -- (`libs/cli/tests/common/mod.rs`, `libs/cli/tests/plugin.rs`) the same way.
 
 local function u32(value: number): string return string.pack('<I4', value) end

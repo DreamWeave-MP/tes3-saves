@@ -8,7 +8,7 @@ pattern is a case-insensitive Rust regex (`jess.regex`) except `exactIds`. Recor
 types, flags, ids, raw bytes, and cell kind; subrecord and instance filters test a subrecord's
 text: `name: value` for a typed string field, `TAG: raw` otherwise.
 
-This is `@tes3cmd`'s `src/select.luau` (its commit db6e51a) without `picked` and `ids`, which a
+This is `@tes3cmd`'s `src/select.jsl` (its commit db6e51a) without `picked` and `ids`, which a
 dump doesn't use: selectors are that package's, and it depends on this one, so this one can't ask
 it for them. When selectors have a home below both packages, this file goes.
 ]]
