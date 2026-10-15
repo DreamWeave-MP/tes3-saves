@@ -5,7 +5,7 @@ id = "org.dreamweave.tes3-saves"
 version = "0.1.0"
 jess_api = "1"
 default_target = "tes3-saves"
-include = ["src"]
+include = ["src", "tests"]
 tests = ["tests/run.jsl", "tests/tree.jsl", "tests/codes.jsl", "tests/commands.jsl", "tests/cli.jsl", "tests/strip.jsl", "tests/style.jsl"]
 
 # tes3 is what a save is made of. openmw is here for the commands alone: `check` and `strip` are
@@ -46,4 +46,4 @@ exports = ["@tes3-saves", "@tes3-saves/commands", "@tes3-saves/cli"]
 kind = "command"
 command = "tes3-saves"
 entry = "src/main.jsl"
-capabilities = ["filesystem.read", "filesystem.write", "process.environment"]
+capabilities = ["filesystem.read", "filesystem.write", "process.environment", "process.stdio"]
