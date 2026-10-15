@@ -4,7 +4,7 @@
 
 --[[
 Record, subrecord, and CELL reference selection (jess-omwaddon's `select`), for `dump`. Every
-pattern is a case-insensitive Rust regex (`jess.regex`) except `exactIds`. Record filters test
+pattern is a case-insensitive Rust regex (`bytes.regex`) except `exactIds`. Record filters test
 types, flags, ids, raw bytes, and cell kind; subrecord and instance filters test a subrecord's
 text: `name: value` for a typed string field, `TAG: raw` otherwise.
 
@@ -13,7 +13,10 @@ dump doesn't use: selectors are that package's, and it depends on this one, so t
 it for them. When selectors have a home below both packages, this file goes.
 ]]
 
+local bytes = require '@dream/bytes'
 local tes3 = require '@tes3'
+
+type Regex = dream_bytes_Regex
 
 type Plugin = tes3.Plugin
 
@@ -55,11 +58,11 @@ export type Selector = {
   exterior: boolean,
 }
 
-local function compile(pattern: string, bytes: boolean): Regex
-  -- jess.regex.new throws on a pattern that isn't a regex.
+local function compile(pattern: string, raw: boolean): Regex
+  -- bytes.regex throws on a pattern that isn't a regex.
   local ok, regex = pcall(
     function(): Regex
-      return jess.regex.new(if bytes then `(?-u){pattern}` else pattern, { caseInsensitive = true })
+      return bytes.regex(if raw then `(?-u){pattern}` else pattern, { caseInsensitive = true })
     end
   )
 
@@ -142,10 +145,10 @@ local function new(spec: Spec?): Selector
     types = set
   end
 
-  local function regexes(patterns: (string | { string })?, bytes: boolean): { Regex }
+  local function regexes(patterns: (string | { string })?, raw: boolean): { Regex }
     local out = {}
     for _, pattern in list(patterns) do
-      table.insert(out, compile(pattern, bytes))
+      table.insert(out, compile(pattern, raw))
     end
 
     return out

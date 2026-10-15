@@ -72,14 +72,14 @@ local function installed(name: string): (openmw.Context, string, fixtures.Scenar
   local scratch =
     assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
   local found = scenario(name)
-  local directory = jess.fs.join(scratch, 'tes3-saves', name)
-  local data = jess.fs.join(directory, 'data')
+  local directory = fs.join(scratch, 'tes3-saves', name)
+  local data = fs.join(directory, 'data')
   io(fs.mkdir(data, { recursive = true }))
   for file, bytes in found.files do
-    io(fs.writeFile(jess.fs.join(data, file), bytes))
+    io(fs.writeFile(fs.join(data, file), bytes))
   end
 
-  local path = jess.fs.join(directory, 'openmw.cfg')
+  local path = fs.join(directory, 'openmw.cfg')
   io(fs.writeFile(path, 'data=data\n' .. (found.config or '')))
   return openmw.new(path), data, found
 end
@@ -377,15 +377,15 @@ suite.describe('load order from an OpenMW Context', function()
   suite.it('takes the content, the files, and the code page from the Context', function()
     local context, data, found = installed 'check-what-breaks'
     local order = saves.loadOrder.fromOpenMw(context)
-    local morrowind = jess.fs.join(data, 'Morrowind.esm')
+    local morrowind = fs.join(data, 'Morrowind.esm')
     expect(order.content).toEqual { { name = 'Morrowind.esm', path = morrowind } }
-    expect(order.resolve 'unticked.esp').toBe(jess.fs.join(data, 'Unticked.esp'))
+    expect(order.resolve 'unticked.esp').toBe(fs.join(data, 'Unticked.esp'))
     expect(order.resolve 'Gone.esp').toBeNil()
     expect(order.encoding).toBeNil()
     local read = assert(order.read)
     expect(buffer.tostring(read(morrowind) :: buffer) == found.files['Morrowind.esm']).toBe(true)
     -- A path the Context never named is read as the file it is.
-    local config = jess.fs.join(jess.fs.parent(data), 'openmw.cfg')
+    local config = fs.join(fs.parent(data), 'openmw.cfg')
     expect(buffer.tostring(read(config) :: buffer)).toBe 'data=data\ncontent=Morrowind.esm\n'
     expect(saves.loadOrder.fromOpenMw((installed 'encoding-win1251')).encoding).toBe 'win1251'
   end)

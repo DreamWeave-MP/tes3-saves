@@ -47,6 +47,7 @@ local Read = require './read'
 local Select = require './select'
 local Strip = require './strip'
 local Values = require './values'
+local backup = require '@jess/backup'
 local fs = require '@dream/fs'
 local openmw = require '@openmw'
 local tes3 = require '@tes3'
@@ -89,7 +90,7 @@ local function configuration(config: string): string
   end
 
   for _, name in names do
-    if string.lower(name) == 'openmw.cfg' then return jess.fs.join(config, name) end
+    if string.lower(name) == 'openmw.cfg' then return fs.join(config, name) end
   end
 
   return error(`the folder '{config}' has no openmw.cfg`, 0)
@@ -251,7 +252,7 @@ export type ScreenshotResult = {
 
 --- `path` with its file name's extension replaced by `extension`, or given one.
 local function withExtension(path: string, extension: string): string
-  local name = jess.fs.fileName(path) or path
+  local name = fs.fileName(path) or path
   local stem = string.match(name, '^(.+)%.[^.]*$') or name
   return `{string.sub(path, 1, #path - #name)}{stem}.{extension}`
 end
@@ -263,7 +264,7 @@ local function screenshot(request: ScreenshotRequest): ScreenshotResult
   local dryRun = request.dryRun == true
   local written: Written? = nil
   if not dryRun then
-    written = jess.fs.write(output, image, { backup = request.backup ~= false })
+    written = backup.write(output, image, { backup = request.backup ~= false })
   end
 
   return {
@@ -362,7 +363,8 @@ local paged: Paged? = nil
 
 local function openPaged(request: DumpRequest): Paged
   local path = request.path
-  local size, modified = jess.fs.size(path), jess.fs.modified(path)
+  local stat = fs.stat(path)
+  local size, modified = if stat then stat.size else nil, if stat then stat.modified else nil
   local kept = paged
   if
     kept
@@ -415,7 +417,7 @@ local function dump(request: DumpRequest): DumpResult
     local bytes = Layout.extractMatching(plugin, selector, request.header == true)
     local written: Written? = nil
     if not request.dryRun then
-      written = jess.fs.write(output, bytes, { backup = request.backup ~= false })
+      written = backup.write(output, bytes, { backup = request.backup ~= false })
     end
 
     return {

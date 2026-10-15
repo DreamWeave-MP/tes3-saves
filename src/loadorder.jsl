@@ -9,6 +9,7 @@ read in. `fromOpenMw` makes one from an `@openmw` Context; scripts that hold the
 some other way build one themselves.
 ]]
 
+local fs = require '@dream/fs'
 local intern = require '@dream/intern'
 local tes3 = require '@tes3'
 
@@ -19,7 +20,7 @@ export type LoadOrder = {
   content: { Content },
   --- The file a content name resolves to through the data folders, or nil.
   resolve: (name: string) -> string?,
-  --- A resolved file's bytes; `jess.fs.readBuffer` when missing.
+  --- A resolved file's bytes; `fs.readFile` when missing.
   read: ((path: string) -> (string | buffer)?)?,
   --- The code page content is read in (the config's `encoding=`); the save's when nil.
   encoding: string?,
@@ -42,7 +43,7 @@ local function fromOpenMw<Self>(context: Self & Context<Self>): LoadOrder
   return {
     content = context:content(),
     resolve = function(name: string): string? return context:resolve(name) end,
-    read = function(path: string): buffer? return jess.fs.readBuffer(path) end,
+    read = function(path: string): buffer? return fs.readFile(path) end,
     encoding = context.encoding,
   }
 end
@@ -56,7 +57,7 @@ local function openContent(
   encoding: string
 ): (tes3.Plugin?, string?, number)
   local reader = order.read
-  local bytes = if reader then reader(path) else jess.fs.readBuffer(path)
+  local bytes = if reader then reader(path) else fs.readFile(path)
   if not bytes then
     return nil, `failed to read '{path}': No such file or directory (os error 2)`, 0
   end

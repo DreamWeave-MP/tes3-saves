@@ -8,6 +8,7 @@ local commands = require '@tes3-saves/commands'
 local disk = require './disk'
 local dumps = require './dumps'
 local fixtures = require './fixtures'
+local fs = require '@dream/fs'
 local plugins = require './plugins'
 local saves = require '@tes3-saves'
 local tes3 = require '@tes3'
@@ -20,7 +21,7 @@ local at, fieldsOf, listOf = dumps.at, dumps.fieldsOf, dumps.listOf
 
 --- A save alone in a fresh folder named `name`.
 local function saved(name: string, bytes: string, file: string?): string
-  return disk.write(jess.fs.join(disk.folder(name), file or 'Save.omwsave'), bytes)
+  return disk.write(fs.join(disk.folder(name), file or 'Save.omwsave'), bytes)
 end
 
 local function has(list: { saves.Finding }, severity: string, problem: string, id: string): boolean
@@ -96,7 +97,7 @@ suite.describe('info', function()
   suite.it('names the file that isn\'t a save, or isn\'t there', function()
     local path = saved('commands-info-garbage', 'not a save at all')
     expect(function() commands.info { path = path } end).toThrow(`failed to parse '{path}'`)
-    local missing = jess.fs.join(jess.fs.parent(path) :: string, 'Nowhere.omwsave')
+    local missing = fs.join(fs.parent(path) :: string, 'Nowhere.omwsave')
     expect(function() commands.info { path = missing } end).toThrow(`failed to read '{missing}'`)
   end)
 
@@ -112,7 +113,7 @@ end)
 suite.describe('screenshot', function()
   suite.it('writes an OpenMW save\'s JPEG, backing up what it replaces unless told not to', function()
     local path = saved('commands-screenshot', fixtures.save())
-    local output = jess.fs.join(jess.fs.parent(path) :: string, 'shot.jpg')
+    local output = fs.join(fs.parent(path) :: string, 'shot.jpg')
     local first = commands.screenshot { path = path, output = output }
     expect(first.command).toBe 'screenshot'
     expect(first.format).toBe 'jpeg'
@@ -130,10 +131,10 @@ suite.describe('screenshot', function()
     -- `backup = false` replaces it without a copy.
     local third = commands.screenshot { path = path, output = output, backup = false }
     expect(third.written).toEqual { path = output }
-    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+    expect(fs.exists(output .. '.bak1')).toBe(false)
 
     -- Without an output, the image goes next to the save.
-    local beside = jess.fs.join(jess.fs.parent(path) :: string, 'Save.jpg')
+    local beside = fs.join(fs.parent(path) :: string, 'Save.jpg')
     local fourth = commands.screenshot { path = path }
     expect(fourth.output).toBe(beside)
     expect(fourth.written).toEqual { path = beside }
@@ -142,18 +143,18 @@ suite.describe('screenshot', function()
 
   suite.it('says where the image would go and writes nothing on a dry run', function()
     local path = saved('commands-screenshot-dry', fixtures.save())
-    local beside = jess.fs.join(jess.fs.parent(path) :: string, 'Save.jpg')
+    local beside = fs.join(fs.parent(path) :: string, 'Save.jpg')
     local result = commands.screenshot { path = path, dryRun = true }
     expect(result.output).toBe(beside)
     expect(result.bytes).toBe(4)
     expect(result.dryRun).toBe(true)
     expect(result.written).toBeNil()
-    expect(jess.fs.exists(beside)).toBe(false)
+    expect(fs.exists(beside)).toBe(false)
   end)
 
   suite.it('writes a Morrowind save\'s pixels as a TGA', function()
     local path = saved('commands-screenshot-morrowind', fixtures.morrowindSave(), 'Quicksave.ess')
-    local output = jess.fs.join(jess.fs.parent(path) :: string, 'shot.tga')
+    local output = fs.join(fs.parent(path) :: string, 'shot.tga')
     local result = commands.screenshot { path = path, output = output }
     expect(result.format).toBe 'tga'
     expect(result.bytes).toBe(18 + 128 * 128 * 3)
@@ -163,7 +164,7 @@ suite.describe('screenshot', function()
     expect(string.byte(tga, 3)).toBe(2)
 
     local beside = commands.screenshot { path = path, dryRun = true }
-    expect(beside.output).toBe(jess.fs.join(jess.fs.parent(path) :: string, 'Quicksave.tga'))
+    expect(beside.output).toBe(fs.join(fs.parent(path) :: string, 'Quicksave.tga'))
   end)
 end)
 
@@ -280,7 +281,7 @@ suite.describe('check', function()
 
   suite.it('refuses a configuration that isn\'t there', function()
     local laid = disk.install('plain', 'commands-check-config')
-    local nowhere = jess.fs.join(laid.root, 'nowhere')
+    local nowhere = fs.join(laid.root, 'nowhere')
     expect(function() commands.check { path = laid.save, config = nowhere } end).toThrow(
       `the OpenMW configuration '{nowhere}' doesn't exist`
     )
@@ -397,7 +398,7 @@ suite.describe('dump', function()
 
   suite.it('writes the selected records to a file of their own', function()
     local path = saved('commands-dump-extract', dumps.dynamic())
-    local output = jess.fs.join(jess.fs.parent(path) :: string, 'globals.esp')
+    local output = fs.join(fs.parent(path) :: string, 'globals.esp')
     local request: commands.DumpRequest =
       { path = path, selectors = { type = 'GLOB' }, rawOutput = output, header = true }
     local preview = table.clone(request)
@@ -407,7 +408,7 @@ suite.describe('dump', function()
     expect(planned.output).toBe(output)
     expect(planned.dryRun).toBe(true)
     expect(planned.written).toBeNil()
-    expect(jess.fs.exists(output)).toBe(false)
+    expect(fs.exists(output)).toBe(false)
 
     local result = commands.dump(request)
     expect(result.bytes).toBe(planned.bytes)
@@ -422,7 +423,7 @@ suite.describe('dump', function()
     expect(commands.dump(request).written).toEqual { path = output, backup = output .. '.bak' }
     request.backup = false
     expect(commands.dump(request).written).toEqual { path = output }
-    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+    expect(fs.exists(output .. '.bak1')).toBe(false)
   end)
 
   suite.it('gives a dump a page at a time, each saying where the next starts', function()
@@ -583,7 +584,7 @@ suite.describe('strip', function()
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
 
     -- A dry run of a strip to an output is still a dry run.
-    local output = jess.fs.join(laid.root, 'Vanilla.omwsave')
+    local output = fs.join(laid.root, 'Vanilla.omwsave')
     local preview = commands.strip {
       path = laid.save,
       config = laid.config,
@@ -594,12 +595,12 @@ suite.describe('strip', function()
 
     expect(preview.written).toBeNil()
     expect(part(preview, 'mode')).toBe 'dry-run'
-    expect(jess.fs.exists(output)).toBe(false)
+    expect(fs.exists(output)).toBe(false)
   end)
 
   suite.it('writes over the save after a backup, or where it is told', function()
     local laid = disk.install('typed-refids', 'commands-strip-write')
-    local output = jess.fs.join(laid.root, 'Vanilla.omwsave')
+    local output = fs.join(laid.root, 'Vanilla.omwsave')
     local request: commands.StripRequest =
       { path = laid.save, config = laid.config, dependencies = { 'Tribunal.esm' }, output = output }
     local elsewhere = commands.strip(request)
@@ -614,7 +615,7 @@ suite.describe('strip', function()
     expect(commands.strip(request).written).toEqual { path = output, backup = output .. '.bak' }
     request.backup = false
     expect(commands.strip(request).written).toEqual { path = output }
-    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+    expect(fs.exists(output .. '.bak1')).toBe(false)
 
     request.output = nil
     request.backup = nil
@@ -648,7 +649,7 @@ suite.describe('strip', function()
     end
 
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
-    expect(jess.fs.exists(laid.save .. '.bak')).toBe(false)
+    expect(fs.exists(laid.save .. '.bak')).toBe(false)
   end)
 
   suite.it('can\'t tell a removed file\'s records apart without a configuration', function()
@@ -671,7 +672,7 @@ suite.describe('strip', function()
       end
     ).toThrow 'save strip --output must differ from the input'
 
-    local quicksave = disk.write(jess.fs.join(laid.root, 'Quicksave.ess'), fixtures.morrowindSave())
+    local quicksave = disk.write(fs.join(laid.root, 'Quicksave.ess'), fixtures.morrowindSave())
     expect(
       function() commands.strip { path = quicksave, dependencies = { 'Morrowind.esm' } } end
     ).toThrow 'save strip isn\'t supported for Morrowind saves'

@@ -10,10 +10,12 @@ local commands = require '@tes3-saves/commands'
 local disk = require './disk'
 local dumps = require './dumps'
 local fixtures = require './fixtures'
+local fs = require '@dream/fs'
 local json = require '@jess/json'
 local plugins = require './plugins'
 local saves = require '@tes3-saves'
 local test = require '@jess/test'
+local toml = require '@jess/data/toml'
 local expect = test.expect
 local suite = test.new()
 
@@ -52,7 +54,7 @@ end
 
 --- A save alone in a fresh folder named `name`.
 local function saved(name: string, bytes: string, file: string?): string
-  return disk.write(jess.fs.join(disk.folder(name), file or 'Save.omwsave'), bytes)
+  return disk.write(fs.join(disk.folder(name), file or 'Save.omwsave'), bytes)
 end
 
 --- The f32 nearest `value`, as a save holds one.
@@ -1207,7 +1209,9 @@ suite.describe('run', function()
     local first = string.sub(source, 1, 1)
     local path = if first == '@' or first == '=' then string.sub(source, 2) else source
     local package = string.match(path, '^(.*)/tests/[^/]*$') or '.'
-    local manifest = jess.toml.decode(assert(jess.fs.read(`{package}/jess.toml`)))
+    local fileText, problem = fs.readFileString(`{package}/jess.toml`)
+    if not fileText then error(problem, 0) end
+    local manifest = toml.decode(fileText)
     expect(cli.Version).toBe((manifest.package :: { version: string }).version)
   end)
 
@@ -1255,27 +1259,28 @@ suite.describe('run', function()
 
   suite.it('returns 9 for a save that isn\'t there, isn\'t a save, or is the other game\'s', function()
     local folder = disk.folder 'cli-run-failures'
-    expect(cli.run { 'info', jess.fs.join(folder, 'Nowhere.omwsave') }).toBe(9)
-    local garbage = disk.write(jess.fs.join(folder, 'Garbage.omwsave'), 'not a save at all')
+    expect(cli.run { 'info', fs.join(folder, 'Nowhere.omwsave') }).toBe(9)
+    local garbage = disk.write(fs.join(folder, 'Garbage.omwsave'), 'not a save at all')
     expect(cli.run { 'info', garbage }).toBe(9)
-    local quicksave = disk.write(jess.fs.join(folder, 'Quicksave.ess'), fixtures.morrowindSave())
+    local quicksave = disk.write(fs.join(folder, 'Quicksave.ess'), fixtures.morrowindSave())
     expect(cli.run { 'info', '--game', 'openmw', quicksave }).toBe(9)
     expect(cli.run { 'info', '--game', 'morrowind', quicksave }).toBe(0)
     -- Check and strip read the OpenMW load order and save layout, so they refuse Morrowind saves.
     expect(cli.run { 'check', quicksave }).toBe(9)
     expect(cli.run { 'strip', '--dry-run', quicksave, 'Morrowind.esm' }).toBe(9)
     expect(cli.run { 'dump', '--id', '(', quicksave }).toBe(9)
-    local left = jess.fs.list(folder)
+    local left, problem = fs.list(folder)
+    if not left then error(problem, 0) end
     table.sort(left)
     expect(left).toEqual { 'Garbage.omwsave', 'Quicksave.ess' }
   end)
 
   suite.it('returns 9 for a configuration that isn\'t there, and writes nothing', function()
     local laid = disk.install('typed-refids', 'cli-run-config')
-    expect(cli.run { 'check', '--config', jess.fs.join(laid.root, 'nowhere'), laid.save }).toBe(9)
+    expect(cli.run { 'check', '--config', fs.join(laid.root, 'nowhere'), laid.save }).toBe(9)
     expect(cli.run { 'strip', '--config', laid.data, laid.save, 'Tribunal.esm' }).toBe(9)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
-    expect(jess.fs.exists(laid.save .. '.bak')).toBe(false)
+    expect(fs.exists(laid.save .. '.bak')).toBe(false)
   end)
 
   suite.it('checks the save alone without a configuration, and exits 1 when it can\'t load', function()
@@ -1362,8 +1367,8 @@ suite.describe('run', function()
 
   suite.it('extracts the screenshot where it is told, and beside the save when it isn\'t', function()
     local path = saved('cli-run-screenshot', fixtures.save())
-    local folder = jess.fs.parent(path) :: string
-    local output = jess.fs.join(folder, 'shot.jpg')
+    local folder = fs.parent(path) :: string
+    local output = fs.join(folder, 'shot.jpg')
     expect(cli.run { '--format', 'json', 'screenshot', path, output }).toBe(0)
     expect(disk.read(output)).toBe '\255\216\255\217'
 
@@ -1373,11 +1378,11 @@ suite.describe('run', function()
 
     -- --output names the file too, and --no-backup replaces it without a copy.
     expect(cli.run { '--format', 'json', 'screenshot', '--no-backup', '--output', output, path }).toBe(0)
-    expect(jess.fs.exists(output .. '.bak1')).toBe(false)
+    expect(fs.exists(output .. '.bak1')).toBe(false)
 
     -- Without an output, the image goes next to the save.
     expect(cli.run { 'screenshot', path }).toBe(0)
-    expect(disk.read(jess.fs.join(folder, 'Save.jpg'))).toBe '\255\216\255\217'
+    expect(disk.read(fs.join(folder, 'Save.jpg'))).toBe '\255\216\255\217'
 
     local document = printed { '--format', 'json', 'screenshot', '--no-backup', '-o', output, path }
     expect(json.decode(document)).toEqual {
@@ -1508,7 +1513,7 @@ suite.describe('run', function()
     local raw = json.decode((printed { '--format', 'json', 'dump', '--raw', path })) :: { [string]: any }
     expect(raw.records[1].type).toBe 'TES3'
 
-    local screenshot = jess.fs.join(jess.fs.parent(path) :: string, 'shot.tga')
+    local screenshot = fs.join(fs.parent(path) :: string, 'shot.tga')
     expect(cli.run { '--format', 'json', 'screenshot', path, screenshot }).toBe(0)
     local tga = disk.read(screenshot)
     expect(#tga).toBe(18 + 128 * 128 * 3)
@@ -1521,7 +1526,7 @@ suite.describe('run', function()
     expect(cli.run { 'strip', '--dry-run', '--config', laid.config, laid.save, 'Tribunal.esm' }).toBe(0)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
 
-    local output = jess.fs.join(laid.root, 'Vanilla.omwsave')
+    local output = fs.join(laid.root, 'Vanilla.omwsave')
     expect(cli.run { 'strip', '--config', laid.config, '--output', output, laid.save, 'Tribunal.esm' }).toBe(0)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
     expect(saves.info(saves.open(output)).dependencies).toEqual { 'Morrowind.esm' }
@@ -1536,7 +1541,7 @@ suite.describe('run', function()
     expect(cli.run { 'strip', '--config', laid.config, laid.save, 'Races.esp' }).toBe(1)
     expect(cli.run { 'strip', '--dry-run', '--config', laid.config, laid.save, 'Races.esp' }).toBe(0)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
-    expect(jess.fs.exists(laid.save .. '.bak')).toBe(false)
+    expect(fs.exists(laid.save .. '.bak')).toBe(false)
 
     local document, status = printed { '--format', 'json', 'strip', '--config', laid.config, laid.save, 'Races.esp' }
     local report = json.decode(document) :: { [string]: any }

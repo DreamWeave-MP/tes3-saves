@@ -15,6 +15,7 @@ local LoadOrder = require './loadorder'
 local Read = require './read'
 local Records = require './records'
 local Scan = require './scan'
+local backup = require '@jess/backup'
 local intern = require '@dream/intern'
 local tes3 = require '@tes3'
 
@@ -2270,7 +2271,7 @@ local function strip(
   local written = nil
   if target and applied then
     -- Whatever is at the target, the input or an existing output, is backed up first.
-    written = jess.fs.write(target, plugin:save(), { backup = given.backup ~= false })
+    written = backup.write(target, plugin:save(), { backup = given.backup ~= false })
   end
 
   local report = {

@@ -10,6 +10,7 @@ in the header itself (GMDT, SCRD, SCRS; `ESM::Header::load` in OpenMW's
 ]]
 
 local Records = require './records'
+local fs = require '@dream/fs'
 local tes3 = require '@tes3'
 
 type Plugin = tes3.Plugin
@@ -78,7 +79,7 @@ end
 
 --- The save at `path`.
 local function open(path: string, options: Options?): Save
-  local bytes = jess.fs.readBuffer(path)
+  local bytes = fs.readFile(path)
   if not bytes then error(`failed to read '{path}': No such file or directory (os error 2)`, 0) end
 
   local given: Options = if options then table.clone(options) else {}

@@ -6,6 +6,7 @@
 -- has to work one spelling back from the other.
 local codelist = require './codelist'
 local fixtures = require './fixtures'
+local fs = require '@dream/fs'
 local saves = require '@tes3-saves'
 local tes3 = require '@tes3'
 local test = require '@jess/test'
@@ -164,8 +165,13 @@ end
 
 suite.it('spells every code and reason of jess-save\'s sources, letter for letter', function()
   local sources = {}
-  for _, name in jess.fs.list(`{root()}/src`) do
-    table.insert(sources, assert(jess.fs.read(`{root()}/src/{name}`)))
+  local names, problem = fs.list(`{root()}/src`)
+  if not names then error(problem, 0) end
+
+  for _, name in names do
+    local fileText, problem = fs.readFileString(`{root()}/src/{name}`)
+    if not fileText then error(problem, 0) end
+    table.insert(sources, fileText)
   end
 
   local text = table.concat(sources, '\n')

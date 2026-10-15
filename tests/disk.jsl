@@ -16,8 +16,8 @@ end
 local function folder(name: string): string
   local scratch =
     assert(rawget(_G, 'scratchRoot') :: string?, 'the suite needs a host-owned scratchRoot')
-  local path = jess.fs.join(scratch, 'tes3-saves', name)
-  if jess.fs.exists(path) then must(fs.remove(path, { recursive = true })) end
+  local path = fs.join(scratch, 'tes3-saves', name)
+  if fs.exists(path) then must(fs.remove(path, { recursive = true })) end
 
   must(fs.mkdir(path, { recursive = true }))
   return path
@@ -59,16 +59,16 @@ local function lay(
   lines: string?
 ): Installed
   local root = folder(name)
-  local data = jess.fs.join(root, 'data')
+  local data = fs.join(root, 'data')
   must(fs.mkdir(data))
   for file, content in files do
-    write(jess.fs.join(data, file), content)
+    write(fs.join(data, file), content)
   end
 
   return {
     root = root,
-    save = write(jess.fs.join(root, 'Save.omwsave'), bytes),
-    config = write(jess.fs.join(root, 'openmw.cfg'), 'data=data\n' .. (lines or '')),
+    save = write(fs.join(root, 'Save.omwsave'), bytes),
+    config = write(fs.join(root, 'openmw.cfg'), 'data=data\n' .. (lines or '')),
     data = data,
     bytes = bytes,
   }

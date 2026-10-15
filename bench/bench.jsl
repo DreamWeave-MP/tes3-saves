@@ -666,7 +666,8 @@ end
 local saved = save()
 local savePath = `{scratch}/bench.omwsave`
 
-assert(fs.writeFile(savePath, saved))
+local done, problem = fs.writeFile(savePath, saved)
+if not done then error(problem, 0) end
 
 local opened = saves.parse(saved, { name = 'bench' })
 local everything = loadOrder(Dependencies)
