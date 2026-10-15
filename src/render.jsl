@@ -1,5 +1,4 @@
 --!strict
---!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
@@ -482,6 +481,7 @@ local function document(value: Value, format: Format): string
 end
 
 --- Fields under names already spelled as the document has them.
+@native
 local function fieldsOf(keys: { string }, values: { Values.Node }): Values.Fields
   return { kind = 'map' :: 'map', keys = keys, values = values, verbatim = true }
 end
@@ -548,6 +548,7 @@ end
 --- CELL references instance filters picked. A subrecord is written as soon as it is shaped: a
 --- cell's record has tens of thousands. `resumed` is a part that carries a record on: more of
 --- its subrecords, under the key the first part wrote.
+@native
 local function yamlLayout(out: { string }, layout: Commands.RecordLayout, resumed: boolean)
   local subrecords = layout.subrecords
   if not resumed then
@@ -577,6 +578,7 @@ local function yamlLayout(out: { string }, layout: Commands.RecordLayout, resume
   end
 end
 
+@native
 local function jsonSubrecords(out: { string }, subrecords: { Commands.SubrecordLayout })
   table.insert(out, '"subrecords":[')
   for position, sub in subrecords do
@@ -719,6 +721,7 @@ end
 
 --- A dump's records as the list under `records`, or the part of it one page of a dump is:
 --- `continued` when an earlier page started the list, and ended by a result without a `next`.
+@native
 local function records(
   result: Commands.DumpResult,
   format: 'yaml' | 'json',

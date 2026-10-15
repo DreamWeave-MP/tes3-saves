@@ -1,5 +1,4 @@
 --!strict
---!native
 -- The `tes3-saves` command target's entry: the command line's arguments in, the exit status out.
 local cli = require '@tes3-saves/cli'
 
