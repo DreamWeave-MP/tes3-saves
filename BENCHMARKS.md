@@ -97,3 +97,65 @@ through `@jess/data/value`'s encoder at about 8.8 microseconds a call, and each 
 9,084 references (`123 (Morrowind.esm)`) is one, which is about 80 of the YAML dump's 282 ms. A
 float of a JSON dump goes through that module's `shortest` at about 1.3 microseconds, and this
 dump has 40,000, which is about 53 of the JSON dump's 149 ms.
+
+## Which modules are native, and why
+
+Jess compiles to machine code only what is marked (`--!native` on a module, `@native` on one
+function), and every load pays for what is marked. A module carries `--!native` when a row below
+spends its time there and the module is small (12 KB or less); a larger module carries `@native`
+on the functions the row spends its time in, and nothing else.
+
+Measured 2026-10-15 with `jess 0.1.0`, the verified release build of jess `07c38cb` on l3i
+2.0.3, on the i7-10870H, the one-minute load 1.43 and 1.14 at the start of the two
+sessions. In each session the bench ran alternately on this package and on a copy of it with
+every module marked, three fresh runs of `bench/bench.jsl` each, every run's row the median of
+its batches; a column is the median of the three, and a ratio is against the all-marked runs of
+the same session. Which functions a row spends its time in comes from `jess run --profile` of
+that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
+--package-path jpk` of a script that only requires `@tes3-saves`, the two sides alternating, the
+median of five each after one warm-up.
+
+| Requiring `@tes3-saves` | All marked | This state |
+| --- | ---: | ---: |
+| Unmarked | 0.169 s | 0.127 s |
+| Final | 0.132 s | 0.119 s |
+
+| Row | All marked (ms) | Unmarked / all marked | Final (ms) | Final / all marked |
+| --- | ---: | ---: | ---: | ---: |
+| open a save | 0.2713 | 1.017× | 0.2665 | 0.982× |
+| info | 0.00804 | **1.056×** | 0.00785 | 0.976× |
+| validate | 4.953 | **2.035×** | 4.969 | 1.003× |
+| decode every Lua payload | 5.131 | **1.477×** | 4.908 | 0.956× |
+| check against the load order | 18.65 | **1.936×** | 18.24 | 0.978× |
+| check against a load order without Tribunal.esm | 18.27 | **1.952×** | 17.81 | 0.975× |
+| strip Tribunal.esm | 72.47 | **1.775×** | 79.53 | **1.097×** |
+| strip Tribunal.esm, which is not installed | 70.54 | **1.769×** | 75.11 | **1.065×** |
+| strip Mod.esp, the last content file | 56.00 | **1.843×** | 57.29 | 1.023× |
+| plan a strip of Bloodmoon.esm, which is blocked | 34.25 | **1.697×** | 36.54 | **1.067×** |
+| tree of every record | 53.68 | **1.640×** | 52.08 | 0.970× |
+| values of every record | 64.38 | **1.657×** | 60.89 | 0.946× |
+| dump as YAML | 261.6 | **1.390×** | 253.8 | 0.970× |
+| dump as JSON | 142.8 | **1.418×** | 137.7 | 0.964× |
+| dump the byte layout as JSON | 109.0 | **1.568×** | 111.9 | 1.027× |
+| dump the byte layout as YAML | 186.0 | **1.337×** | 186.9 | 1.005× |
+| list every record | 1.723 | **1.340×** | 1.703 | 0.988× |
+| list the records whose id matches a pattern | 1.112 | **1.139×** | 1.065 | 0.957× |
+| extract the cell states | 0.9535 | **1.073×** | 0.9456 | 0.992× |
+
+What carries the directive (every module and function here is one a row spends its time in,
+unmarked):
+
+- Whole: `check`, `commands`, `dumptext`, `layout`, `loadorder`, `read`, `records`, `scan`,
+  `select`, `values`.
+- `render`, by function: `fieldsOf`, `yamlLayout`, `jsonSubrecords`, `records`.
+- Unmarked: `cli`, `init`, `main`, `strip`.
+
+Marked by function first, the dumps, the record tree and values, and the strips stayed 1.07x to
+1.21x slower than all marked, the time between the marked functions and the rest of each module
+being most of what was left; so the modules those rows spend time in are marked whole, and this
+state saves 0.013 s a load where by function saved 0.020 s. `cli` and `main` parse a command line
+once a run and are never marked. The three rows still above 5% are the strips (1.065x to 1.097x),
+whose profiles never put `strip` itself above 3% of their time: what they spend is in the modules
+marked here, and what remains sits at the edge of this protocol's noise (two all-marked copies of
+dream-archive, measured the same way, put 10 of 109 rows more than 5% apart, the 95th percentile
+at 1.074x).
