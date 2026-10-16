@@ -186,7 +186,7 @@ suite.describe('tree', function()
 
     -- An integer is what makes a payload version 1.
     local payload = tes3.save.encodeLuaData(state)
-    expect(string.byte(payload, 1)).toBe(1)
+    expect((string.byte(payload, 1))).toBe(1)
 
     local save = saves.parse(fixtures.save() .. record('LUAM', subrecord('LUAD', payload)))
     local data = fieldsOf(at(listOf(at(saves.tree(save)[3], 'subrecords')).items[1], 'LUAD'))

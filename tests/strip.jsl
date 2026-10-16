@@ -327,7 +327,7 @@ suite.describe('plans', function()
       expect(document).toContain(expected)
     end
 
-    expect(string.find(document, 'reference scan is partial', 1, true)).toBeNil()
+    expect((string.find(document, 'reference scan is partial', 1, true))).toBeNil()
     expect(string.sub(document, -2)).toBe '}\n'
     expect(select(2, string.gsub(document, '\n', ''))).toBe(1)
   end)
@@ -443,14 +443,14 @@ suite.describe('writing', function()
     })
     -- The output path is used as given; its extension isn't changed. Nothing was there to back up.
     expect(report.written).toEqual { path = output }
-    expect(fs.exists(fs.join(laid.root, 'user-choice.omwsave'))).toBe(false)
+    expect((fs.exists(fs.join(laid.root, 'user-choice.omwsave')))).toBe(false)
     expect(unchanged(laid)).toBe(true)
     expect(#disk.read(output) < #laid.bytes).toBe(true)
 
     -- --no-backup replaces what's at the output without a copy.
     local again = stripOk(laid, { '--output', output, '--no-backup' }, { 'Morrowind.esm' })
     expect(again.written).toEqual { path = output }
-    expect(fs.exists(output .. '.bak')).toBe(false)
+    expect((fs.exists(output .. '.bak'))).toBe(false)
   end)
 
   suite.it('rejects an output that is the save', function()
@@ -526,7 +526,7 @@ suite.describe('writing', function()
     expect(message).toContain 'nothing was written'
     expect(cli.run { 'strip', '--config', laid.config, laid.save, 'Morrowind.esm' }).toBe(1)
     expect(disk.read(laid.save) == stripped).toBe(true)
-    expect(fs.exists(laid.save .. '.bak2')).toBe(false)
+    expect((fs.exists(laid.save .. '.bak2'))).toBe(false)
   end)
 
   suite.it('keeps the record count exact', function()
@@ -1729,7 +1729,7 @@ suite.describe('samples and code pages', function()
     local document = cli.render(commands.strip(request.request), { format = request.format })
     expect(document).toContain '"samples":'
     expect(document).toContain '"id":"target_misc"'
-    expect(string.find(document, '"id":"target_static"', 1, true)).toBeNil()
+    expect((string.find(document, '"id":"target_static"', 1, true))).toBeNil()
   end)
 
   suite.it('reads content files in the configuration\'s code page', function()

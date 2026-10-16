@@ -1230,7 +1230,7 @@ suite.describe('run', function()
     end
 
     for _, other in { 'clone', 'validate', 'stats' } do
-      expect(string.find(help, other, 1, true)).toBeNil()
+      expect((string.find(help, other, 1, true))).toBeNil()
     end
 
     for _, option in { '--format <FORMAT>', '--game <GAME>', '--encoding <ENCODING>', '-h, --help', '-V, --version' } do
@@ -1243,7 +1243,7 @@ suite.describe('run', function()
     expect(strip).toContain 'tes3-saves strip [--dry-run] [--output <OUTPUT>] [--no-backup] [--sample-limit <N>]'
     expect(strip).toContain '--sample-limit <N>  How many example record ids each part of the plan lists. [default: 5]'
     expect(strip).toContain 'Exit status: 0 done; 1 check found a save that can\'t load'
-    expect(string.find(strip, '--raw-output', 1, true)).toBeNil()
+    expect((string.find(strip, '--raw-output', 1, true))).toBeNil()
     expect(cli.usage 'check').toContain '--config <PATH>  An openmw.cfg or its folder'
     expect(cli.usage 'screenshot').toContain '-o, --output <OUTPUT>  Where to write the image.'
     expect(cli.usage 'dump').toContain '-t, --type <TYPE>    Only match record types. Can be repeated.'
@@ -1280,7 +1280,7 @@ suite.describe('run', function()
     expect(cli.run { 'check', '--config', fs.join(laid.root, 'nowhere'), laid.save }).toBe(9)
     expect(cli.run { 'strip', '--config', laid.data, laid.save, 'Tribunal.esm' }).toBe(9)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
-    expect(fs.exists(laid.save .. '.bak')).toBe(false)
+    expect((fs.exists(laid.save .. '.bak'))).toBe(false)
   end)
 
   suite.it('checks the save alone without a configuration, and exits 1 when it can\'t load', function()
@@ -1378,7 +1378,7 @@ suite.describe('run', function()
 
     -- --output names the file too, and --no-backup replaces it without a copy.
     expect(cli.run { '--format', 'json', 'screenshot', '--no-backup', '--output', output, path }).toBe(0)
-    expect(fs.exists(output .. '.bak1')).toBe(false)
+    expect((fs.exists(output .. '.bak1'))).toBe(false)
 
     -- Without an output, the image goes next to the save.
     expect(cli.run { 'screenshot', path }).toBe(0)
@@ -1517,7 +1517,7 @@ suite.describe('run', function()
     expect(cli.run { '--format', 'json', 'screenshot', path, screenshot }).toBe(0)
     local tga = disk.read(screenshot)
     expect(#tga).toBe(18 + 128 * 128 * 3)
-    expect(string.byte(tga, 3)).toBe(2)
+    expect((string.byte(tga, 3))).toBe(2)
   end)
 
   suite.it('strips a save in place after a backup, and to an output when asked', function()
@@ -1541,7 +1541,7 @@ suite.describe('run', function()
     expect(cli.run { 'strip', '--config', laid.config, laid.save, 'Races.esp' }).toBe(1)
     expect(cli.run { 'strip', '--dry-run', '--config', laid.config, laid.save, 'Races.esp' }).toBe(0)
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
-    expect(fs.exists(laid.save .. '.bak')).toBe(false)
+    expect((fs.exists(laid.save .. '.bak'))).toBe(false)
 
     local document, status = printed { '--format', 'json', 'strip', '--config', laid.config, laid.save, 'Races.esp' }
     local report = json.decode(document) :: { [string]: any }

@@ -131,7 +131,7 @@ suite.describe('screenshot', function()
     -- `backup = false` replaces it without a copy.
     local third = commands.screenshot { path = path, output = output, backup = false }
     expect(third.written).toEqual { path = output }
-    expect(fs.exists(output .. '.bak1')).toBe(false)
+    expect((fs.exists(output .. '.bak1'))).toBe(false)
 
     -- Without an output, the image goes next to the save.
     local beside = fs.join(fs.parent(path) :: string, 'Save.jpg')
@@ -149,7 +149,7 @@ suite.describe('screenshot', function()
     expect(result.bytes).toBe(4)
     expect(result.dryRun).toBe(true)
     expect(result.written).toBeNil()
-    expect(fs.exists(beside)).toBe(false)
+    expect((fs.exists(beside))).toBe(false)
   end)
 
   suite.it('writes a Morrowind save\'s pixels as a TGA', function()
@@ -161,7 +161,7 @@ suite.describe('screenshot', function()
     local tga = disk.read(output)
     expect(#tga).toBe(18 + 128 * 128 * 3)
     -- An uncompressed true-color TGA.
-    expect(string.byte(tga, 3)).toBe(2)
+    expect((string.byte(tga, 3))).toBe(2)
 
     local beside = commands.screenshot { path = path, dryRun = true }
     expect(beside.output).toBe(fs.join(fs.parent(path) :: string, 'Quicksave.tga'))
@@ -408,7 +408,7 @@ suite.describe('dump', function()
     expect(planned.output).toBe(output)
     expect(planned.dryRun).toBe(true)
     expect(planned.written).toBeNil()
-    expect(fs.exists(output)).toBe(false)
+    expect((fs.exists(output))).toBe(false)
 
     local result = commands.dump(request)
     expect(result.bytes).toBe(planned.bytes)
@@ -423,7 +423,7 @@ suite.describe('dump', function()
     expect(commands.dump(request).written).toEqual { path = output, backup = output .. '.bak' }
     request.backup = false
     expect(commands.dump(request).written).toEqual { path = output }
-    expect(fs.exists(output .. '.bak1')).toBe(false)
+    expect((fs.exists(output .. '.bak1'))).toBe(false)
   end)
 
   suite.it('gives a dump a page at a time, each saying where the next starts', function()
@@ -595,7 +595,7 @@ suite.describe('strip', function()
 
     expect(preview.written).toBeNil()
     expect(part(preview, 'mode')).toBe 'dry-run'
-    expect(fs.exists(output)).toBe(false)
+    expect((fs.exists(output))).toBe(false)
   end)
 
   suite.it('writes over the save after a backup, or where it is told', function()
@@ -615,7 +615,7 @@ suite.describe('strip', function()
     expect(commands.strip(request).written).toEqual { path = output, backup = output .. '.bak' }
     request.backup = false
     expect(commands.strip(request).written).toEqual { path = output }
-    expect(fs.exists(output .. '.bak1')).toBe(false)
+    expect((fs.exists(output .. '.bak1'))).toBe(false)
 
     request.output = nil
     request.backup = nil
@@ -649,7 +649,7 @@ suite.describe('strip', function()
     end
 
     expect(disk.read(laid.save) == laid.bytes).toBe(true)
-    expect(fs.exists(laid.save .. '.bak')).toBe(false)
+    expect((fs.exists(laid.save .. '.bak'))).toBe(false)
   end)
 
   suite.it('can\'t tell a removed file\'s records apart without a configuration', function()
