@@ -34,6 +34,10 @@ end
 --- reads, the command of that name, `render`, and `status`.
 local function printed(argv: { string }): (string, number)
   local request = parsed(argv)
+  if request.command == 'help' or request.command == 'version' then
+    error(`{request.command} prints no document`, 0)
+  end
+
   local result: commands.Result
   if request.command == 'info' then
     result = commands.info(request.request)
@@ -43,10 +47,8 @@ local function printed(argv: { string }): (string, number)
     result = commands.strip(request.request)
   elseif request.command == 'screenshot' then
     result = commands.screenshot(request.request)
-  elseif request.command == 'dump' then
-    result = commands.dump(request.request)
   else
-    error(`{request.command} prints no document`, 0)
+    result = commands.dump(request.request)
   end
 
   return cli.render(result, { format = request.format }), cli.status(result)
@@ -1069,7 +1071,7 @@ suite.describe('render', function()
 
   suite.it('writes a dump in pages as the one document, started once and ended once', function()
     local function page(records: { number }, next: number?): commands.DumpResult
-      local listed = {}
+      local listed: { commands.Listed } = {}
       for position, index in records do
         listed[position] = { record = index, type = 'GLOB' }
       end
@@ -1091,7 +1093,7 @@ suite.describe('render', function()
     local pages = { page({ 0, 1 }, 2), page({ 2, 3 }, 4), page({ 4 }, nil) }
     -- A page that looked through records and picked none, wherever it comes.
     local sparse = { page({}, 2), page({ 0, 1 }, 4), page({}, 6), page({ 2, 3, 4 }, 8), page({}, nil) }
-    for _, format in { 'yaml', 'json' } do
+    for _, format in { 'yaml', 'json' } :: { cli.Format } do
       expect(written(pages, format)).toBe(cli.render(whole, { format = format }))
       expect(written(sparse, format)).toBe(cli.render(whole, { format = format }))
       expect(written({ page({}, 2), page({}, nil) }, format)).toBe(

@@ -39,6 +39,8 @@ export type RecordLayout = {
   size: number,
   range: { start: number, ['end']: number },
   subrecords: { SubrecordLayout }?,
+  --- A CELL's references, when the dump selects by them.
+  references: { ReferenceLayout }?,
 }
 
 --- One CELL reference: its position among the cell's references (0-based), and its subrecords.

@@ -385,7 +385,7 @@ suite.describe('load order from an OpenMW Context', function()
     local read = assert(order.read)
     expect(buffer.tostring(read(morrowind) :: buffer) == found.files['Morrowind.esm']).toBe(true)
     -- A path the Context never named is read as the file it is.
-    local config = fs.join(fs.parent(data), 'openmw.cfg')
+    local config = fs.join(assert(fs.parent(data)), 'openmw.cfg')
     expect(buffer.tostring(read(config) :: buffer)).toBe 'data=data\ncontent=Morrowind.esm\n'
     expect(saves.loadOrder.fromOpenMw((installed 'encoding-win1251')).encoding).toBe 'win1251'
   end)

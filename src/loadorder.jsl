@@ -43,7 +43,7 @@ local function fromOpenMw<Self>(context: Self & Context<Self>): LoadOrder
   return {
     content = context:content(),
     resolve = function(name: string): string? return context:resolve(name) end,
-    read = function(path: string): buffer? return fs.readFile(path) end,
+    read = function(path: string): buffer? return (fs.readFile(path)) end,
     encoding = context.encoding,
   }
 end

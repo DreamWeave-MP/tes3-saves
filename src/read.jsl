@@ -43,9 +43,8 @@ local SaveTag, Tes3Tag, GmdtTag, LuadTag =
 --- What kind of save `plugin` is, or nil: an OpenMW save has a SAVE record, a Morrowind save a
 --- GMDT subrecord in its header.
 local function detect(plugin: Plugin): Game?
-  if any[for index in range(0, plugin:count() - 1) => plugin:code(index) == SaveTag] then
-    return 'openmw'
-  end
+  local saved = any[for index in range(0, plugin:count() - 1) => plugin:code(index) == SaveTag]
+  if saved then return 'openmw' end
 
   if plugin:count() > 0 and plugin:code(0) == Tes3Tag and plugin:findSubrecord(0, GmdtTag) then
     return 'morrowind'

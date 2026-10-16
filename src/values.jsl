@@ -26,7 +26,7 @@ type Save = Read.Save
 type LuaValue = tes3.LuaValue
 
 --- A missing value where one has a place: a float that isn't finite, which no format spells.
-export type Null = { kind: 'null' }
+export type Null = { read kind: 'null' }
 
 --- A number the save holds as a float, whole or not.
 export type Float = { kind: 'float', value: number }
@@ -41,7 +41,7 @@ export type Fields = { kind: 'map', keys: { string }, values: { Node }, verbatim
 --- `@tes3` gives without saying whether the record holds it as a float.
 export type Node = string | number | boolean | Null | Float | List | Fields
 
-local Null: Null = table.freeze { kind = 'null' :: 'null' }
+local Null = table.freeze({ kind = 'null' } :: Null)
 
 --- Record types OpenMW writes as dynamic records with the regular content-record layout.
 local DynamicTagList = {
@@ -603,7 +603,7 @@ local function subrecordsValue(
 end
 
 local function strings(items: { string }): List
-  local nodes: { Node } = table.create(#items)
+  local nodes = table.create(#items) :: { Node }
   for position, item in items do
     nodes[position] = item
   end

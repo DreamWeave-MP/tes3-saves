@@ -121,7 +121,7 @@ end
 --- A struct: its fields in their order, each under its own name.
 local function struct(fields: { Field }): Shape
   return function(value: unknown): Value
-    local source: { [string]: unknown } = if type(value) == 'table' then value :: {} else {}
+    local source: { [string]: unknown } = if type(value) == 'table' then value :: { [string]: unknown } else {}
     local pairs: { { unknown } } = {}
     for _, entry in fields do
       local item = source[entry.key]
@@ -810,7 +810,7 @@ local function render(result: Commands.Result, options: Options?): string
   end
 
   local continued = options ~= nil and options.continued == true
-  local chosen = format or (if result.mode == 'layout' then 'json' else 'yaml')
+  local chosen: Format = format or (if result.mode == 'layout' then 'json' else 'yaml')
   if chosen == 'toml' then return tomlRecords(result, continued) end
 
   return records(result, chosen, continued)

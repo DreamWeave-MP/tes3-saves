@@ -104,7 +104,7 @@ local function loadOrder(config: string?): (LoadOrder.LoadOrder?, string?)
   local path = configuration(config)
   -- openmw.new raises on a configuration chain it can't read or parse; the error names the
   -- configuration with why.
-  local loaded, context = pcall(openmw.new, path)
+  local loaded, context = pcall(openmw.new, path, nil)
   if not loaded then error(`failed to load the OpenMW configuration '{path}': {context}`, 0) end
 
   return LoadOrder.fromOpenMw(context :: openmw.Context), path
@@ -316,7 +316,7 @@ export type DumpRequest = Input & {
 export type Listed = { record: number, type: string, id: string? }
 
 --- A record's byte layout, with its CELL references when instance filters select them.
-export type RecordLayout = Layout.RecordLayout & { references: { Layout.ReferenceLayout }? }
+export type RecordLayout = Layout.RecordLayout
 export type SubrecordLayout = Layout.SubrecordLayout
 
 export type DumpResult = {

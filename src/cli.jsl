@@ -547,7 +547,7 @@ local function parse(argv: { string }): (Request?, string?)
     path = path,
     game = game,
     encoding = encoding,
-    selectors = if next(selectors) then selectors else nil,
+    selectors = if next(selectors :: { [string]: unknown }) then selectors else nil,
     list = if switch(given, 'list') then true else nil,
     raw = if switch(given, 'raw') then true else nil,
     rawOutput = rawOutput,
@@ -679,10 +679,10 @@ local function run(argv: { string }): number
     end
 
     local result = outcome :: Commands.Result
+    local options: Render.Options = { format = request.format, continued = continued }
     -- TOML has no null and no list of mixed kinds; the serializer raises for a document it can't
     -- hold, as the toml crate did.
-    local shown, document =
-      pcall(Render.render, result, { format = request.format, continued = continued })
+    local shown, document = pcall(Render.render, result, options)
     if not shown then
       err(`failed to write output: {reason(document)}`)
       return Exit.runtime

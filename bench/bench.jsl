@@ -232,7 +232,7 @@ local function loadOrder(names: { string }): saves.LoadOrder
   end
 
   return {
-    content = [for name in names => { name = name, path = name }],
+    content = [for name in names => { name = name, path = name } :: saves.Content],
     resolve = function(name: string): string?
       return if available[string.lower(name)] then name else nil
     end,
@@ -747,7 +747,7 @@ workload(
   'open a save',
   602,
   function() return saves.parse(saved, { name = 'bench' }) end,
-  function(save) return save.plugin:count() end
+  function(save: saves.Save) return save.plugin:count() end
 )
 
 workload(
@@ -763,7 +763,7 @@ workload(
   'validate',
   4000,
   function() return saves.validate(opened.plugin) end,
-  function(validation) return #validation.checks * 1000 + #validation.diagnostics end
+  function(validation: saves.Validation) return #validation.checks * 1000 + #validation.diagnostics end
 )
 
 workload(
@@ -887,5 +887,5 @@ workload(
       dryRun = true,
     }
   end,
-  function(result) return result.bytes or 0 end
+  function(result: commands.DumpResult) return result.bytes or 0 end
 )
