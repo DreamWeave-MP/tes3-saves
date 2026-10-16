@@ -588,10 +588,12 @@ local function err(message: string) process.write('stderr', `tes3-saves: {messag
 
 --- The configuration `OPENMW_CONFIG` names, or nil.
 local function environment(): string?
-  -- `process.env` throws in a runtime without the process.environment capability. A caller there
-  -- can only name the configuration with --config, so the variable counts as unset.
-  local readable, value = pcall(process.env, 'OPENMW_CONFIG')
-  if readable and value ~= '' then return value end
+  -- A caller without the process.environment capability can only name the configuration with
+  -- --config, so there the variable counts as unset.
+  if not jess.granted 'process.environment' then return nil end
+
+  local value = process.env 'OPENMW_CONFIG'
+  if value ~= '' then return value end
 
   return nil
 end
