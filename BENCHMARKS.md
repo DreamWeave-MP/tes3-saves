@@ -87,7 +87,7 @@ What moved, and why:
 - **The comprehensions, reducers, slices, and record patterns** the loops became lower to the
   loops they replaced, and no row moved on their account.
 
-What did not move: `open a save` and `info` are `@tes3`'s framing and its SAVE record, and the
+What did not move: `open a save` and `info` are `@esm`'s framing and its SAVE record, and the
 extraction is a file read and a copy. The extraction read 5 percent slower in the three rounds
 above, 60 microseconds on a millisecond. Seven more rounds of that workload alone, base and head
 in turn under one lock, put the medians at 1.117 ms and 1.119 ms: no change.

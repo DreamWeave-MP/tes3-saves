@@ -15,7 +15,7 @@ thousands.
 ]]
 
 local Select = require './select'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Plugin = tes3.Plugin
 type Selector = Select.Selector

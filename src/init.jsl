@@ -2,11 +2,11 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
-Saves in Luau: what `jess save` does, over `@tes3`. OpenMW and Morrowind saves open and
+Saves in Luau: what `jess save` does, over `@esm`. OpenMW and Morrowind saves open and
 describe themselves (metadata, screenshot, readable records, Lua data); OpenMW saves can be
 validated, checked against a load order, and have content files stripped from them, with every
 rule jess-save applies. A load order is a `loadOrder` value: `loadOrder.fromOpenMw(context)` for
-an `@openmw` Context.
+an `@openmw-install` Context.
 
 Reports spell their codes camelCase, made from jess-save's own; `originalCodes` asks a check or a
 strip for them as jess-save's sources have them (`will_not_load`, `dry-run`), which is what its
@@ -19,7 +19,7 @@ local LoadOrder = require '@self/loadorder'
 local Read = require '@self/read'
 local Strip = require '@self/strip'
 local Values = require '@self/values'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 export type Save = Read.Save
 export type Game = Read.Game

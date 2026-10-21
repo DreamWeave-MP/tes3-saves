@@ -8,7 +8,7 @@ positions 0-based as every report counts them, and the field readers the rules s
 ]]
 
 local bytes = require '@dream/bytes'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Plugin = tes3.Plugin
 

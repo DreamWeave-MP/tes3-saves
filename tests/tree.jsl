@@ -6,7 +6,7 @@ local dumps = require './dumps'
 local fixtures = require './fixtures'
 local plugins = require './plugins'
 local saves = require '@tes3-saves'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
@@ -212,7 +212,7 @@ suite.describe('tree', function()
     expect(items).toEqual { 'a', 'b' }
   end)
 
-  suite.it('is what values gives, as plain tables, and shows Lua data as @tes3 does', function()
+  suite.it('is what values gives, as plain tables, and shows Lua data as @esm does', function()
     local bytes = {
       readable(),
       fixtures.morrowindSave(),

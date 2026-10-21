@@ -10,7 +10,7 @@ Meanings are the snake_case codes jess-save uses; reports spell them camelCase.
 ]]
 
 local Records = require './records'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Plugin = tes3.Plugin
 type Record = Records.Record

@@ -6,7 +6,7 @@
 local fixtures = require './fixtures'
 local plugins = require './plugins'
 local saves = require '@tes3-saves'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 local record, subrecord = plugins.record, plugins.subrecord
 

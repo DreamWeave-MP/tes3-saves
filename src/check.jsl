@@ -13,7 +13,7 @@ local LoadOrder = require './loadorder'
 local Read = require './read'
 local Records = require './records'
 local Scan = require './scan'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Plugin = tes3.Plugin
 type Record = Records.Record

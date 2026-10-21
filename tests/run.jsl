@@ -3,13 +3,13 @@
 -- tes3-saves' own cases: what jess's CLI save tests (`libs/cli/tests/save.rs`, `save_strip.rs`)
 -- and jess-save's unit tests check, on saves built here and load orders held in memory, so the
 -- suite needs nothing but the package. The last group is the exception: it lays scenarios out
--- under the harness's `scratchRoot` and reads them back through a real `@openmw` Context.
+-- under the harness's `scratchRoot` and reads them back through a real `@openmw-install` Context.
 local fixtures = require './fixtures'
 local plugins = require './plugins'
 local fs = require '@dream/fs'
-local openmw = require '@openmw'
+local openmw = require '@openmw-install'
 local saves = require '@tes3-saves'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()

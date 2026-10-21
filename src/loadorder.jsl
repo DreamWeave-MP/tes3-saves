@@ -5,13 +5,13 @@
 --[[
 The load order a save is checked or stripped against: the active content files (and where each is
 on disk), how a content file name resolves through the data folders, and the code page content is
-read in. `fromOpenMw` makes one from an `@openmw` Context; scripts that hold the files
+read in. `fromOpenMw` makes one from an `@openmw-install` Context; scripts that hold the files
 some other way build one themselves.
 ]]
 
 local fs = require '@dream/fs'
 local intern = require '@dream/intern'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 export type Content = { name: string, path: string? }
 
@@ -26,7 +26,7 @@ export type LoadOrder = {
   encoding: string?,
 }
 
---- What `fromOpenMw` uses of an `@openmw` Context, named here so reading saves doesn't depend on
+--- What `fromOpenMw` uses of an `@openmw-install` Context, named here so reading saves doesn't depend on
 --- the VFS and archives behind one. `Self` is the whole Context: its methods take it as their
 --- receiver, and the checker rejects a Context where they are declared to take anything narrower.
 type Context<Self> = {
@@ -35,7 +35,7 @@ type Context<Self> = {
   read resolve: (self: Self, path: string) -> string?,
 }
 
---- The load order an `@openmw` Context describes. A content file is a loose file at the top of a
+--- The load order an `@openmw-install` Context describes. A content file is a loose file at the top of a
 --- data folder, and the Context resolves its name to that file, so it is read as the file it is:
 --- the Context's own read goes through its whole VFS, archives and all, which a load order has no
 --- use for.

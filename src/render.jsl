@@ -28,7 +28,7 @@ local Commands = require './commands'
 local DumpText = require './dumptext'
 local Values = require './values'
 local serialize = require '@jess/data/value'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Value = serialize.Value
 

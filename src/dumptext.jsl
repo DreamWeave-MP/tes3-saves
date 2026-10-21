@@ -74,7 +74,7 @@ local function remembering(spell: (text: string) -> string): (text: string) -> s
   end
 end
 
---- A record field's name as jess's files spell it. `@tes3` names a typed record's fields
+--- A record field's name as jess's files spell it. `@esm` names a typed record's fields
 --- camelCase from jess-omwaddon's snake_case ones, which are lowercase words and digits between
 --- underscores, so each capital is where an underscore was. That holds for field names and for
 --- nothing else: a code is never read back this way.

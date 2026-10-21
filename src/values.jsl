@@ -18,7 +18,7 @@ list, and the place of a value that is missing.
 local Read = require './read'
 local Records = require './records'
 local Scan = require './scan'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Plugin = tes3.Plugin
 type Record = Records.Record
@@ -38,7 +38,7 @@ export type List = { kind: 'list', items: { Node } }
 export type Fields = { kind: 'map', keys: { string }, values: { Node }, verbatim: boolean? }
 
 --- A readable value. A plain number is a whole number, or one of a typed record's, which
---- `@tes3` gives without saying whether the record holds it as a float.
+--- `@esm` gives without saying whether the record holds it as a float.
 export type Node = string | number | boolean | Null | Float | List | Fields
 
 local Null = table.freeze({ kind = 'null' } :: Null)
@@ -104,7 +104,7 @@ end
 --- The fields a typed value starts with, in order; the rest follow by name.
 local Leading = { 'record', 'type', 'id', 'name' }
 
---- A plain value of `@tes3`'s as a tree. Its tables don't say what order their fields come in, so
+--- A plain value of `@esm`'s as a tree. Its tables don't say what order their fields come in, so
 --- a record's number, type, id, and name go first and the rest by name.
 local function fromPlain(value: unknown): Node
   if type(value) ~= 'table' then
@@ -178,7 +178,7 @@ end
 
 --[[ Lua data ]]
 
---- A number as a key, the way `@tes3`'s display spells one (serde_json's): an exact integer
+--- A number as a key, the way `@esm`'s display spells one (serde_json's): an exact integer
 --- without a fraction, else its shortest digits.
 local function numberKey(value: number): string
   if value % 1 == 0 and math.abs(value) <= 2 ^ 53 then return string.format('%d', value) end
@@ -229,7 +229,7 @@ local Vectors: { [string]: string } = {
   color = 'color',
 }
 
---- A decoded Lua value as `@tes3`'s display shows one with its keys kept (`display.luaValue`),
+--- A decoded Lua value as `@esm`'s display shows one with its keys kept (`display.luaValue`),
 --- with what that loses: a table's keys in the order the save has them. Tables keyed 1 to n are
 --- lists, other tables fields under text keys, and userdata one field naming its type.
 local function luaNode(value: LuaValue): Node

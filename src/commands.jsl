@@ -49,8 +49,8 @@ local Strip = require './strip'
 local Values = require './values'
 local backup = require '@jess/backup'
 local fs = require '@dream/fs'
-local openmw = require '@openmw'
-local tes3 = require '@tes3'
+local openmw = require '@openmw-install'
+local tes3 = require '@esm'
 
 export type Game = Read.Game
 export type Encoding = 'win1250' | 'win1251' | 'win1252'

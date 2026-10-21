@@ -15,7 +15,7 @@ local cli = require '@tes3-saves/cli'
 local commands = require '@tes3-saves/commands'
 local fs = require '@dream/fs'
 local saves = require '@tes3-saves'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 -- A build without the verified toolchain runs Luau slower than a release does, so a number from
 -- one says nothing about what ships.

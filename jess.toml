@@ -12,8 +12,8 @@ tests = ["tests/run.jsl", "tests/tree.jsl", "tests/codes.jsl", "tests/commands.j
 # given a configuration by its path and need the load order it describes; @tes3-saves itself
 # still takes a load order as a value and names an OpenMW Context only by its shape.
 [dependencies]
-"org.dreamweave.tes3" = "0.1"
-"org.dreamweave.openmw" = "0.1"
+"org.dreamweave.esm" = "0.1"
+"org.dreamweave.openmw-install" = "0.1"
 
 [modules]
 "@tes3-saves" = "src/init.jsl"
@@ -31,7 +31,7 @@ tests = ["tests/run.jsl", "tests/tree.jsl", "tests/codes.jsl", "tests/commands.j
 
 [[layer]]
 id = "tes3-saves.core"
-requires = ["tes3.core", "openmw.core"]
+requires = ["esm.core", "openmw-install.core"]
 exports = ["@tes3-saves", "@tes3-saves/commands", "@tes3-saves/cli"]
 
 # The command line: `src/main.jsl` hands its arguments to `@tes3-saves/cli`. A command reads the

@@ -14,7 +14,7 @@ it for them. When selectors have a home below both packages, this file goes.
 ]]
 
 local bytes = require '@dream/bytes'
-local tes3 = require '@tes3'
+local tes3 = require '@esm'
 
 type Regex = dream_bytes_Regex
 
