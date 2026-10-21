@@ -1,0 +1,40 @@
+base_url = "https://dreamweave-mp.github.io/tes3-saves"
+title = "tes3-saves"
+description = "Reads, strips and repairs Morrowind and OpenMW saves, verified in memory before anything is written, as a Jess package and command in Luau."
+compile_sass = true
+build_search_index = true
+generate_feeds = true
+feed_filenames = ["atom.xml"]
+taxonomies = [{ name = "tags", feed = false }]
+
+[search]
+index_format = "fuse_json"
+include_title = true
+include_description = true
+include_content = true
+truncate_content_length = 400
+
+[markdown]
+highlighting = { theme = "dracula-soft" }
+insert_anchor_links = "right"
+smart_punctuation = true
+
+[slugify]
+paths = "safe"
+
+[link_checker]
+skip_prefixes = ["https://github.com/", "https://www.nexusmods.com/"]
+
+[extra]
+github_username = "DreamWeave-MP"
+github_project = "tes3-saves"
+logo_text = "tes3-saves"
+palette = "moss"
+menu_items = [
+    { name = "tes3-saves", url = "@/home/index.md" },
+    { name = "Network", url = "@/network.md" },
+]
+
+[extra.comments]
+enabled = false
+category = "General"
