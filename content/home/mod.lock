@@ -1,0 +1,52 @@
+{
+  "schema_version": "3",
+  "document": "lock",
+  "project": "0921f076-a7ea-4c32-82a6-a57040fe866e",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "locked_from": "c41c81a2bdd24aeaca502f36115f424715382dae",
+      "artifacts": [
+        {
+          "id": "jpk",
+          "format": "jpk",
+          "filename": "org.dreamweave.tes3-saves-0.1.0.jpk",
+          "media_type": "application/vnd.jess.jpk",
+          "size": 197527,
+          "digests": {
+            "sha256": "756a6a9f4312007ae5f308e9e618777b0e2c8ec7857517aa6060e6d2d6f5ef5f"
+          },
+          "jess": {
+            "package": "org.dreamweave.tes3-saves",
+            "jess_api": "1",
+            "content_digest": "a586dc57d12b1a4bcce1b9f7274f2f657fa682c0ba8cbdcaf9b8f0a6675f1faa",
+            "dependencies": {
+              "org.dreamweave.esm": "0.1",
+              "org.dreamweave.openmw-install": "0.1"
+            }
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "tes3-saves",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
